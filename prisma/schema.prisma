@@ -1,0 +1,132 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// NOTE: MediKiosk demo schema. Array/object columns are stored as JSON strings
+// (SQLite-safe) and parsed in src/lib/types.ts mappers.
+
+model Patient {
+  id          String   @id @default(cuid())
+  mrn         String   @unique // Medical Record Number, e.g. MK-2026-0341
+  name        String
+  nameHi      String? // Hindi transliteration for kiosk display
+  age         Int
+  gender      String
+  phone       String
+  village     String
+  district    String
+  language    String   @default("hi")
+  allergies   String   @default("[]") // JSON string[]
+  conditions  String   @default("[]") // JSON string[] (chronic conditions)
+  medications String   @default("[]") // JSON string[] (current medications)
+  createdAt   DateTime @default(now())
+}
+
+model Visit {
+  id               String   @id @default(cuid())
+  patientId        String
+  type             String // KIOSK_INTAKE | PHC_VISIT | HOSPITAL_VISIT | FOLLOW_UP
+  facility         String
+  chiefComplaint   String
+  symptoms         String   @default("[]") // JSON string[]
+  durationDays     Int?
+  durationLabel    String?
+  severity         String? // MILD | MODERATE | SEVERE
+  triagePriority   String? // LOW | MEDIUM | HIGH
+  redFlags         String   @default("[]") // JSON string[]
+  aiSummary        String?
+  aiRecommendation String?
+  status           String   @default("WAITING") // WAITING | TRIAGED | ESCALATED | IN_CONSULTATION | COMPLETED
+  frontlineWorker  String?
+  validatedBy      String?
+  clinicalNote     String?
+  syncStatus       String   @default("SYNCED") // SYNCED | PENDING (offline-created)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+}
+
+model Referral {
+  id           String   @id @default(cuid())
+  patientId    String
+  visitId      String?
+  reason       String
+  origin       String
+  destination  String
+  priority     String // ROUTINE | URGENT | EMERGENCY
+  status       String   @default("PENDING") // PENDING | ACCEPTED | IN_TRANSIT | ARRIVED | IN_CONSULTATION | COMPLETED | CANCELLED
+  assignedTo   String?
+  appointmentAt DateTime?
+  notes        String?
+  history      String   @default("[]") // JSON {status, at, by, note?}[]
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model DiagnosticRequest {
+  id            String   @id @default(cuid())
+  patientId     String
+  visitId       String?
+  testType      String // CBC | BLOOD_GLUCOSE | CHEST_XRAY | HBA1C | URINE_TEST ...
+  status        String   @default("REQUESTED") // REQUESTED | SAMPLE_COLLECTED | PROCESSING | RESULT_READY | REVIEWED
+  result        String?
+  resultSummary String?
+  orderedBy     String?
+  createdAt     DateTime @default(now())
+  completedAt   DateTime?
+  reviewedAt    DateTime?
+}
+
+model MedicineStock {
+  id        String   @id @default(cuid())
+  medicine  String
+  facility  String
+  status    String // AVAILABLE | LOW | OUT
+  quantity  Int
+  unit      String   @default("doses")
+  updatedAt DateTime @updatedAt
+}
+
+model FollowUp {
+  id            String   @id @default(cuid())
+  patientId     String
+  category      String // MATERNAL | CHILD | CHRONIC | HIGH_RISK | MISSED
+  risk          String   @default("MEDIUM") // HIGH | MEDIUM | LOW
+  lastVisit     DateTime?
+  nextDue       DateTime
+  assignedWorker String?
+  status        String   @default("PENDING") // PENDING | CONTACTED | RESCHEDULED | COMPLETED | ESCALATED
+  notes         String?
+  syncStatus    String   @default("SYNCED") // SYNCED | PENDING (offline-created)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model DocumentRecord {
+  id               String   @id @default(cuid())
+  patientId        String
+  type             String // PRESCRIPTION | LAB_REPORT | MEDICAL_RECORD
+  title            String
+  fileName         String?
+  source           String? // e.g. "Rampur PHC Lab", "District Hospital"
+  ocrText          String?
+  extracted        String   @default("[]") // JSON {field, value, unit?, confidence, source, type?}[]
+  validationStatus String   @default("PENDING") // PENDING | VALIDATED | REJECTED
+  validatedBy      String?
+  createdAt        DateTime @default(now())
+  validatedAt      DateTime?
+}
+
+model AuditEvent {
+  id        String   @id @default(cuid())
+  actor     String
+  actorRole String // PATIENT_KIOSK | FRONTLINE | DOCTOR | ADMIN | SYSTEM
+  action    String
+  target    String
+  detail    String?
+  createdAt DateTime @default(now())
+}
