@@ -25,6 +25,15 @@ export async function POST(req: NextRequest) {
     if (!age || age < 0 || age > 120) {
       return NextResponse.json({ ok: false, error: "Invalid age" }, { status: 400 })
     }
+    // Same rule the kiosk UI enforces: at least 10 digits so the
+    // continuity match-by-phone stays reliable
+    const phoneDigits = phone.replace(/\D/g, "")
+    if (phoneDigits.length < 10) {
+      return NextResponse.json(
+        { ok: false, error: "Phone number must contain at least 10 digits" },
+        { status: 400 }
+      )
+    }
 
     const { actor, actorRole } = ROLES[body.actor === "frontline" ? "frontline" : "kiosk"]
 
@@ -99,7 +108,9 @@ export async function POST(req: NextRequest) {
         aiRecommendation: triage.recommendation,
         status: "TRIAGED",
         frontlineWorker: body.frontlineWorker ?? null,
-        syncStatus: body.clientRef ? "PENDING" : "SYNCED",
+        // The server now owns this record (offline-captured ones arrive via
+        // sync replay) — PENDING is a client-side optimistic state only.
+        syncStatus: "SYNCED",
         createdAt: demoNow(-(25 + Math.min(((await db.visit.count()) % 4) * 8, 24))),
       },
     })

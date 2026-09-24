@@ -33,7 +33,12 @@ export async function PATCH(req: NextRequest) {
     })
     await logAudit({
       actor: body.by ?? body.validatedBy ?? "Doctor",
-      actorRole: body.validatedBy || body.by?.startsWith("Dr.") ? "DOCTOR" : "FRONTLINE",
+      // Role reflects WHO performed it: a Dr. escalation/validation is a
+      // doctor action; frontline validation keeps FRONTLINE.
+      actorRole:
+        body.by?.startsWith("Dr.") || body.validatedBy?.startsWith("Dr.")
+          ? "DOCTOR"
+          : "FRONTLINE",
       action: body.status ? `VISIT_${body.status}` : "VISIT_UPDATED",
       target: `${visit.id.slice(-8)} ${visit.chiefComplaint}`,
       detail: body.clinicalNote ?? (body.validatedBy ? "Clinical information validated by professional" : undefined),

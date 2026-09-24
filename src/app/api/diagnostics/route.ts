@@ -41,6 +41,10 @@ export async function POST(req: NextRequest) {
     if (!body.patientId || !body.testType) {
       return NextResponse.json({ ok: false, error: "patientId and testType required" }, { status: 400 })
     }
+    const patient = await db.patient.findUnique({ where: { id: body.patientId } })
+    if (!patient) {
+      return NextResponse.json({ ok: false, error: "Patient not found" }, { status: 404 })
+    }
     const diag = await db.diagnosticRequest.create({
       data: {
         patientId: body.patientId,
@@ -55,8 +59,8 @@ export async function POST(req: NextRequest) {
       actor: body.orderedBy ?? "Dr. A. Prasad",
       actorRole: "DOCTOR",
       action: "DIAGNOSTIC_REQUESTED",
-      target: `${body.testType} — ${diag.id.slice(-8)}`,
-      detail: `Requested for ${body.patientId.slice(-8)}`,
+      target: `${body.testType} — ${patient.mrn} ${patient.name}`,
+      detail: `Requested at ${body.orderedBy === "Dr. A. Prasad" ? "Gopalganj District Hospital" : "referring facility"}`,
       createdAt: demoNow(),
     })
     const data = await getDemoData()
@@ -83,7 +87,21 @@ export async function PATCH(req: NextRequest) {
     if (!existing) {
       return NextResponse.json({ ok: false, error: "Diagnostic request not found" }, { status: 404 })
     }
-    const demo = DEMO_RESULTS[existing.testType] ?? {
+    if (existing.status === "REVIEWED") {
+      return NextResponse.json(
+        { ok: false, error: "Diagnostic request is already reviewed — workflow is closed" },
+        { status: 409 }
+      )
+    }
+    if (body.status === "REVIEWED" && !existing.result) {
+      return NextResponse.json(
+        { ok: false, error: "Cannot mark reviewed before a result is attached" },
+        { status: 409 }
+      )
+    }
+    // UI test-type labels ("Blood Glucose") are normalized to the
+    // demo-result template keys ("BLOOD_GLUCOSE")
+    const demo = DEMO_RESULTS[existing.testType.toUpperCase().replace(/\s+/g, "_")] ?? {
       result: "Demo result available for review.",
       summary: "Demo diagnostic result.",
     }

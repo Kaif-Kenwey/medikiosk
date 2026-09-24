@@ -7,7 +7,7 @@
 // simulated 108 ambulance). AI flags — humans verify and decide.
 // ============================================================
 
-import { Fragment, useEffect, useMemo, useState } from "react"
+import { Fragment, useEffect, useMemo, useRef, useState } from "react"
 import { toast } from "sonner"
 import { AlertTriangle, Ambulance, Check, FileText, Phone, Siren } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
@@ -54,6 +54,7 @@ export default function EmergencyView() {
   const [stage, setStage] = useState(1)
   const [stageTimes, setStageTimes] = useState<Record<number, string>>({})
   const [ambulanceOpen, setAmbulanceOpen] = useState(false)
+  const busyRef = useRef(false)
 
   const visit = useMemo(
     () => data?.visits.find((v) => v.id === activeVisitId) ?? null,
@@ -122,28 +123,40 @@ export default function EmergencyView() {
   }
 
   const onEscalate = async () => {
-    await updateVisit({ id: visit.id, status: "ESCALATED", by: WORKER })
-    setStage((s) => Math.max(s, 3))
-    setStageTimes((prev) => ({ ...prev, 3: new Date().toISOString() }))
-    toast.success("Healthcare professional notified", {
-      description: "Dr. A. Prasad has been alerted for immediate review.",
-    })
+    if (busyRef.current || currentStage >= 3) return
+    busyRef.current = true
+    try {
+      await updateVisit({ id: visit.id, status: "ESCALATED", by: WORKER })
+      setStage((s) => Math.max(s, 3))
+      setStageTimes((prev) => ({ ...prev, 3: new Date().toISOString() }))
+      toast.success("Healthcare professional notified", {
+        description: "Dr. A. Prasad has been alerted for immediate review.",
+      })
+    } finally {
+      busyRef.current = false
+    }
   }
 
   const onStartReferral = async () => {
-    await createReferral({
-      patientId: visit.patientId,
-      visitId: visit.id,
-      reason: `Red-flag escalation — ${visit.chiefComplaint}`,
-      destination: DESTINATION,
-      priority: "EMERGENCY",
-      createdBy: WORKER,
-    })
-    setStage((s) => Math.max(s, 4))
-    setStageTimes((prev) => ({ ...prev, 4: new Date().toISOString() }))
-    toast.success("Referral initiated", {
-      description: `${DESTINATION} — EMERGENCY priority.`,
-    })
+    if (busyRef.current || currentStage >= 4) return
+    busyRef.current = true
+    try {
+      await createReferral({
+        patientId: visit.patientId,
+        visitId: visit.id,
+        reason: `Red-flag escalation — ${visit.chiefComplaint}`,
+        destination: DESTINATION,
+        priority: "EMERGENCY",
+        createdBy: WORKER,
+      })
+      setStage((s) => Math.max(s, 4))
+      setStageTimes((prev) => ({ ...prev, 4: new Date().toISOString() }))
+      toast.success("Referral initiated", {
+        description: `${DESTINATION} — EMERGENCY priority.`,
+      })
+    } finally {
+      busyRef.current = false
+    }
   }
 
   return (

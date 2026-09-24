@@ -35,8 +35,12 @@ export async function POST(req: NextRequest) {
     }
     const triage: TriageResult = computeTriage(input)
     if (body.useLlm) {
-      triage.summary = await tryLlmSummary(input, triage)
-      triage.engine = "llm-assisted"
+      const llm = await tryLlmSummary(input, triage)
+      // Engine label must reflect what actually produced the output:
+      // if the LLM failed or timed out, the deterministic summary stands
+      // and the engine stays "deterministic-rules".
+      triage.summary = llm.summary
+      if (llm.used) triage.engine = "llm-assisted"
     }
     if (body.patientName) {
       await logAudit({

@@ -23,6 +23,10 @@ export async function POST(req: NextRequest) {
     if (!body.patientId) {
       return NextResponse.json({ ok: false, error: "patientId required" }, { status: 400 })
     }
+    const patient = await db.patient.findUnique({ where: { id: body.patientId } })
+    if (!patient) {
+      return NextResponse.json({ ok: false, error: "Patient not found" }, { status: 404 })
+    }
     const tpl = simulateOcr(body.kind ?? "LAB_REPORT")
     const doc = await db.documentRecord.create({
       data: {
@@ -41,7 +45,7 @@ export async function POST(req: NextRequest) {
       actor: body.actor ?? "ANM Sunita Sharma",
       actorRole: "FRONTLINE",
       action: "DOCUMENT_SCANNED",
-      target: `${doc.id} ${tpl.title}`,
+      target: `${patient.mrn} ${patient.name} — ${tpl.title}`,
       detail: `Simulated OCR extracted ${tpl.extracted.length} fields — pending human validation`,
       createdAt: demoNow(),
     })

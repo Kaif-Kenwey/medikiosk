@@ -225,33 +225,47 @@ const HIGH_FLAGS = [
   "Confusion / drowsiness",
   "Altered consciousness",
   "Persistent vomiting",
+  "Severe headache",
   "Fever with severe headache",
   "Persistent high fever",
+  "Fever in elderly patient",
 ]
+
+/**
+ * Vulnerable-population floors: these raise the priority to MEDIUM
+ * (timely clinical review) but do not by themselves declare an
+ * emergency — avoids alarm fatigue from over-triaging routine
+ * presentations in young children.
+ */
+const MEDIUM_FLOOR = "Pediatric patient — priority review"
 
 export function computeTriage(input: TriageInput): TriageResult {
   const flags = new Set<string>()
+  const mediumFlags = new Set<string>()
   const { symptoms, durationDays, severity, age, conditions } = input
 
   for (const s of symptoms) if (HIGH_FLAGS.includes(s)) flags.add(s)
-  for (const f of input.extraRedFlags ?? []) if (HIGH_FLAGS.includes(f)) flags.add(f)
+  for (const f of input.extraRedFlags ?? []) {
+    if (HIGH_FLAGS.includes(f)) flags.add(f)
+    else if (f === "Pediatric patient") mediumFlags.add(MEDIUM_FLOOR)
+  }
   if (symptoms.includes("Fever") && symptoms.includes("Severe headache"))
     flags.add("Fever with severe headache")
   if (symptoms.includes("Fever") && (durationDays ?? 0) >= 3 && severity === "SEVERE")
     flags.add("Persistent high fever")
   if (symptoms.includes("Fever") && (durationDays ?? 0) >= 4) flags.add("Prolonged fever")
   if (age >= 65 && symptoms.includes("Fever")) flags.add("Fever in elderly patient")
-  if (age <= 5) flags.add("Pediatric patient")
+  if (age <= 5) mediumFlags.add(MEDIUM_FLOOR)
   if (conditions.some((c) => /pregnan/i.test(c)))
     flags.add("Symptoms during pregnancy")
 
   let priority: TriagePriority = "LOW"
   if (flags.size > 0) priority = "HIGH"
   else if (
+    mediumFlags.size > 0 ||
     severity === "SEVERE" ||
     (durationDays ?? 0) >= 3 ||
     age >= 60 ||
-    age <= 5 ||
     symptoms.length >= 2
   )
     priority = "MEDIUM"
@@ -289,7 +303,7 @@ AI-assisted risk flag: ${priority} priority.`
   return {
     priority,
     reason,
-    redFlags: [...flags],
+    redFlags: [...flags, ...mediumFlags],
     summary,
     recommendation,
     suggestedWorkflow,
@@ -377,7 +391,10 @@ Advised: CBC, follow-up in 1 week`,
 // Optional LLM narrative enrichment (never decides safety)
 // ------------------------------------------------------------
 
-export async function tryLlmSummary(input: TriageInput, base: TriageResult): Promise<string> {
+export async function tryLlmSummary(
+  input: TriageInput,
+  base: TriageResult
+): Promise<{ summary: string; used: boolean }> {
   try {
     const { default: ZAI } = await import("z-ai-web-dev-sdk")
     const zai = await ZAI.create()
@@ -399,9 +416,9 @@ export async function tryLlmSummary(input: TriageInput, base: TriageResult): Pro
       new Promise((_, rej) => setTimeout(() => rej(new Error("llm-timeout")), 4000)),
     ])) as { choices?: { message?: { content?: string } }[] }
     const text = completion?.choices?.[0]?.message?.content?.trim()
-    if (text && text.length > 10 && text.length < 600) return text
-    return base.summary
+    if (text && text.length > 10 && text.length < 600) return { summary: text, used: true }
+    return { summary: base.summary, used: false }
   } catch {
-    return base.summary
+    return { summary: base.summary, used: false }
   }
 }
