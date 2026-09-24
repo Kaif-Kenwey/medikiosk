@@ -31,6 +31,7 @@ import { AINote, EmptyState, SectionTitle, SourceChip } from "@/components/medik
 import { formatDate } from "@/lib/format"
 import { useAppStore } from "@/lib/store"
 import { cn } from "@/lib/utils"
+import { toast } from "sonner"
 import type { DocumentRecord, ExtractedField } from "@/lib/types"
 
 // ---------- local constants & helpers ----------
@@ -180,6 +181,8 @@ export default function DocumentScanView() {
   const [queuedOffline, setQueuedOffline] = useState(false)
   const [validating, setValidating] = useState(false)
   const [expandedId, setExpandedId] = useState<string | null>(null)
+  const [imageDataUrl, setImageDataUrl] = useState<string | null>(null)
+  const [imageFileName, setImageFileName] = useState<string | null>(null)
 
   const patient = useMemo(() => {
     if (!data) return null
@@ -204,15 +207,43 @@ export default function DocumentScanView() {
     setScanKind(kind)
     setStage(0)
     const startedAt = Date.now()
-    const timers = [1, 2].map((i) => window.setTimeout(() => setStage(i), i * 600))
-    const doc = await scanDocument({ patientId: patient.id, kind, fileName: docTypeMeta(kind).fileName })
+    // Vision OCR is slower than the template — use a longer stepper
+    const stepMs = imageDataUrl ? 1200 : 600
+    const timers = [1, 2].map((i) => window.setTimeout(() => setStage(i), i * stepMs))
+    const doc = await scanDocument({
+      patientId: patient.id,
+      kind,
+      fileName: imageDataUrl ? (imageFileName ?? "scan.jpg") : docTypeMeta(kind).fileName,
+      ...(imageDataUrl ? { imageDataUrl } : {}),
+    })
     // Keep the stepper visible for its full simulated duration
-    const remaining = Math.max(0, 1800 - (Date.now() - startedAt))
+    const remaining = Math.max(0, (imageDataUrl ? 3600 : 1800) - (Date.now() - startedAt))
     await new Promise((resolve) => window.setTimeout(resolve, remaining))
     timers.forEach((t) => window.clearTimeout(t))
     setStage(3)
     setScanKind(null)
     if (!doc) setQueuedOffline(true)
+  }
+
+  function handleImageSelect(file: File | null) {
+    if (!file) return
+    if (!file.type.startsWith("image/")) {
+      toast.error("Only image files are supported", { description: "PNG, JPEG or WebP photos of paper records." })
+      return
+    }
+    if (file.size > 8 * 1024 * 1024) {
+      toast.error("Image too large", { description: "Please use a photo under 8 MB." })
+      return
+    }
+    const reader = new FileReader()
+    reader.onload = () => {
+      setImageDataUrl(typeof reader.result === "string" ? reader.result : null)
+      setImageFileName(file.name)
+      toast.info("Photo attached", {
+        description: "The vision model will read THIS document when you scan.",
+      })
+    }
+    reader.readAsDataURL(file)
   }
 
   async function handleAccept() {
@@ -285,9 +316,38 @@ export default function DocumentScanView() {
           </div>
           <p className="font-medium text-foreground">Scan / Upload document</p>
           <p className="mt-1 text-sm text-muted-foreground">
-            Place the paper record on the kiosk scanner or capture a photo, then choose a document type to simulate a
-            scan.
+            Optionally attach a photo of the paper record — the vision model reads the actual image. Without a photo,
+            a sample template is used.
           </p>
+          <label className="mt-4 cursor-pointer rounded-lg bg-teal-600 px-4 py-2 text-sm font-medium text-white hover:bg-teal-700">
+            <input
+              type="file"
+              accept="image/png,image/jpeg,image/webp"
+              className="sr-only"
+              onChange={(e) => handleImageSelect(e.target.files?.[0] ?? null)}
+            />
+            Choose photo
+          </label>
+          {imageDataUrl ? (
+            <div className="mt-3 w-full space-y-2">
+              <img
+                src={imageDataUrl}
+                alt="Attached document preview"
+                className="max-h-32 w-full rounded-lg border object-contain"
+              />
+              <p className="truncate text-xs text-muted-foreground">{imageFileName}</p>
+              <button
+                type="button"
+                className="text-xs text-red-600 underline hover:text-red-700"
+                onClick={() => {
+                  setImageDataUrl(null)
+                  setImageFileName(null)
+                }}
+              >
+                Remove photo (use template instead)
+              </button>
+            </div>
+          ) : null}
         </div>
         <div className="grid gap-4 sm:grid-cols-3">
           {DOC_TYPES.map(({ kind, label, description, icon: Icon, iconClass }) => (

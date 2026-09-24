@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { db } from "@/lib/db"
 import { logAudit, mapDiagnostic, getDemoData, demoNow } from "@/lib/server-data"
+import { guard } from "@/lib/auth"
 
 export const dynamic = "force-dynamic"
 
@@ -31,6 +32,8 @@ const DEMO_RESULTS: Record<string, { result: string; summary: string }> = {
 
 /** POST — create diagnostic request; PATCH — advance workflow / attach result */
 export async function POST(req: NextRequest) {
+  const denied = guard(req, "POST")
+  if (denied) return denied
   try {
     const body = (await req.json()) as {
       patientId?: string
@@ -74,6 +77,8 @@ export async function POST(req: NextRequest) {
 }
 
 export async function PATCH(req: NextRequest) {
+  const denied = guard(req, "PATCH")
+  if (denied) return denied
   try {
     const body = (await req.json()) as {
       id?: string

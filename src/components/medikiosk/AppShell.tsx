@@ -62,6 +62,8 @@ import {
   BellRing,
   Network,
   ScrollText,
+  KeyRound,
+  LogOut,
 } from "lucide-react"
 
 const ROLE_OPTIONS: { value: Role; label: string; icon: React.ReactNode }[] = [
@@ -75,6 +77,10 @@ export function AppHeader() {
   const {
     role,
     setRole,
+    session,
+    ensureSession,
+    openAuthDialog,
+    signOut,
     language,
     setLanguage,
     navigate,
@@ -118,12 +124,30 @@ export function AppHeader() {
     return () => window.removeEventListener("keydown", onKey)
   }, [setSearchOpen])
 
+  // Re-check the JWT session whenever the browser regains focus
+  // (cheap, catches 8h expiry and cookie clears without a reload)
+  useEffect(() => {
+    const onFocus = () => void ensureSession()
+    window.addEventListener("focus", onFocus)
+    return () => window.removeEventListener("focus", onFocus)
+  }, [ensureSession])
+
   const goRoleHome = (r: Role) => {
-    setRole(r)
+    if (session?.role === r) {
+      setRole(r)
+    } else if (r === "kiosk") {
+      // Kiosk role needs no credentials — restore the device session
+      void useAppStore.getState().signIn("kiosk")
+    } else {
+      // Elevated roles require a facility PIN (RBAC)
+      openAuthDialog(r)
+      return
+    }
     if (r === "kiosk") navigate("kiosk")
     else if (r === "frontline") navigate("intake")
     else if (r === "doctor") navigate("doctor")
     else navigate("facility")
+    setRole(r)
   }
 
   return (
@@ -349,10 +373,29 @@ export function AppHeader() {
                 <span className="hidden max-w-28 text-sm lg:inline">
                   {ROLE_OPTIONS.find((r) => r.value === role)?.label.split(" (")[0]}
                 </span>
+                {session && (
+                  <span
+                    className={`h-2 w-2 rounded-full ${session.role === "kiosk" ? "bg-teal-500" : "bg-emerald-500"}`}
+                    title={`Signed in as ${session.name}`}
+                  />
+                )}
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-64">
-              <DropdownMenuLabel>Demo role (no login — SIH demo)</DropdownMenuLabel>
+              <DropdownMenuLabel className="flex items-center justify-between gap-2">
+                <span>Session (JWT · RBAC)</span>
+                {session && (
+                  <span className="rounded-full bg-teal-50 px-2 py-0.5 text-[10px] font-semibold text-teal-800">
+                    {session.role === "kiosk" ? "KIOSK" : session.role.toUpperCase()}
+                  </span>
+                )}
+              </DropdownMenuLabel>
+              {session && (
+                <div className="px-2 pb-1.5 text-xs text-muted-foreground">
+                  Signed in as <span className="font-medium text-foreground">{session.name}</span>
+                  {session.role !== "kiosk" && " — actions are attributed in the audit trail"}
+                </div>
+              )}
               <DropdownMenuSeparator />
               {ROLE_OPTIONS.map((r) => (
                 <DropdownMenuItem
@@ -362,9 +405,20 @@ export function AppHeader() {
                 >
                   {r.icon}
                   {r.label}
+                  {session?.role === r.value && (
+                    <span className="ml-auto text-[10px] font-semibold text-emerald-600">✓ signed in</span>
+                  )}
                 </DropdownMenuItem>
               ))}
               <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={() => openAuthDialog(null)} className="gap-2">
+                <KeyRound className="h-4 w-4" /> Sign in as staff…
+              </DropdownMenuItem>
+              {session && session.role !== "kiosk" && (
+                <DropdownMenuItem onClick={() => void signOut()} className="gap-2">
+                  <LogOut className="h-4 w-4" /> Sign out
+                </DropdownMenuItem>
+              )}
               <DropdownMenuItem
                 onClick={() => {
                   navigate("record")

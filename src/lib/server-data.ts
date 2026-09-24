@@ -3,14 +3,17 @@
 // ============================================================
 
 import { db } from "@/lib/db"
+import { decryptField } from "@/lib/crypto"
 import {
   parseJsonArray,
   type AuditEvent,
+  type ConsentRecord,
   type DemoData,
   type DocumentRecord,
   type DiagnosticRequest,
   type ExtractedField,
   type FollowUp,
+  type InterviewAnswer,
   type MedicineStock,
   type Patient,
   type Referral,
@@ -40,7 +43,10 @@ export function mapPatient(r: Row): Patient {
     nameHi: (r.nameHi as string) ?? null,
     age: Number(r.age),
     gender: String(r.gender),
-    phone: String(r.phone),
+    // phone is AES-256-GCM encrypted at rest — decrypted here for authorized display
+    phone: decryptField(String(r.phone ?? "")),
+    phoneHash: (r.phoneHash as string) ?? null,
+    abhaId: (r.abhaId as string) ?? null,
     village: String(r.village),
     district: String(r.district),
     language: (r.language as Patient["language"]) ?? "hi",
@@ -70,6 +76,7 @@ export function mapVisit(r: Row): Visit {
     frontlineWorker: (r.frontlineWorker as string) ?? null,
     validatedBy: (r.validatedBy as string) ?? null,
     clinicalNote: (r.clinicalNote as string) ?? null,
+    interviewAnswers: parseJsonArray<InterviewAnswer>(String(r.interviewAnswers ?? "[]")) as InterviewAnswer[],
     syncStatus: (r.syncStatus as Visit["syncStatus"]) ?? "SYNCED",
     createdAt: iso(r.createdAt),
     updatedAt: iso(r.updatedAt),
@@ -169,6 +176,20 @@ export function mapAudit(r: Row): AuditEvent {
   }
 }
 
+export function mapConsent(r: Row): ConsentRecord {
+  return {
+    id: String(r.id),
+    patientId: String(r.patientId),
+    visitId: (r.visitId as string) ?? null,
+    scope: r.scope as ConsentRecord["scope"],
+    granted: Boolean(r.granted),
+    method: r.method as ConsentRecord["method"],
+    language: (r.language as ConsentRecord["language"]) ?? "hi",
+    at: iso(r.at),
+    withdrawnAt: r.withdrawnAt ? iso(r.withdrawnAt) : null,
+  }
+}
+
 export async function logAudit(e: {
   actor: string
   actorRole: AuditEvent["actorRole"]
@@ -182,7 +203,7 @@ export async function logAudit(e: {
 
 /** Full demo dataset (small — sent as one payload, refreshed after each mutation) */
 export async function getDemoData(): Promise<DemoData> {
-  const [patients, visits, referrals, diagnostics, medicines, followUps, documents, audits] =
+  const [patients, visits, referrals, diagnostics, medicines, followUps, documents, consents, audits] =
     await Promise.all([
       db.patient.findMany({ orderBy: { createdAt: "desc" } }),
       db.visit.findMany({ orderBy: { createdAt: "desc" } }),
@@ -191,6 +212,7 @@ export async function getDemoData(): Promise<DemoData> {
       db.medicineStock.findMany({ orderBy: { medicine: "asc" } }),
       db.followUp.findMany({ orderBy: { nextDue: "asc" } }),
       db.documentRecord.findMany({ orderBy: { createdAt: "desc" } }),
+      db.consentRecord.findMany({ orderBy: { at: "desc" } }),
       db.auditEvent.findMany({ orderBy: { createdAt: "desc" }, take: 80 }),
     ])
   return {
@@ -201,6 +223,7 @@ export async function getDemoData(): Promise<DemoData> {
     medicines: medicines.map(mapMedicine),
     followUps: followUps.map(mapFollowUp),
     documents: documents.map(mapDocument),
+    consents: consents.map(mapConsent),
     audits: audits.map(mapAudit),
     serverNow: new Date().toISOString(),
   }

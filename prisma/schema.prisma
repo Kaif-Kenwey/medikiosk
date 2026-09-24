@@ -17,7 +17,9 @@ model Patient {
   nameHi      String? // Hindi transliteration for kiosk display
   age         Int
   gender      String
-  phone       String
+  phone       String // AES-256-GCM ciphertext at rest ("enc.v1:..." — legacy rows stay plaintext)
+  phoneHash   String? // HMAC-SHA256 blind index for continuity match-by-phone without decrypting
+  abhaId      String? // ABDM / Ayushman Bharat Health Account address (INTEGRATION-READY)
   village     String
   district    String
   language    String   @default("hi")
@@ -25,6 +27,20 @@ model Patient {
   conditions  String   @default("[]") // JSON string[] (chronic conditions)
   medications String   @default("[]") // JSON string[] (current medications)
   createdAt   DateTime @default(now())
+}
+
+/// DPDP-style informed consent captured at the kiosk. Consent is an artifact:
+/// who consented, for what scope, when, and how — auditable and withdrawable.
+model ConsentRecord {
+  id          String    @id @default(cuid())
+  patientId   String
+  visitId     String?
+  scope       String // KIOSK_INTAKE | DATA_SHARING_REFERRAL
+  granted     Boolean
+  method      String    @default("KIOSK_CHECKBOX") // KIOSK_CHECKBOX | VERBAL_WORKER
+  language    String    @default("hi")
+  at          DateTime  @default(now())
+  withdrawnAt DateTime?
 }
 
 model Visit {
@@ -45,6 +61,7 @@ model Visit {
   frontlineWorker  String?
   validatedBy      String?
   clinicalNote     String?
+  interviewAnswers String   @default("[]") // JSON {question, answer, at}[] — adaptive interview transcript
   syncStatus       String   @default("SYNCED") // SYNCED | PENDING (offline-created)
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt

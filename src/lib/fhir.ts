@@ -62,15 +62,28 @@ export function buildFhirBundle(patient: Patient, data: DemoData) {
   })
 
   // ---- Patient ----
+  const patientIdentifiers: Record<string, unknown>[] = [
+    { system: "https://medikiosk.demo/mrn", value: patient.mrn },
+  ]
+  // ABHA address — real value when linked, demo fallback derived from the phone
+  if (patient.abhaId) {
+    patientIdentifiers.push({
+      system: "https://healthid.abdm.gov.in/abha-address",
+      value: patient.abhaId,
+      type: { text: "ABHA address (ABDM)" },
+    })
+  } else {
+    patientIdentifiers.push({
+      system: "https://healthid.abdm.gov.in",
+      value: `demo-${patient.phone.replace(/\s/g, "")}@abdm`,
+    })
+  }
   entries.push({
     fullUrl: pid,
     resource: {
       resourceType: "Patient",
       id: patient.id,
-      identifier: [
-        { system: "https://medikiosk.demo/mrn", value: patient.mrn },
-        { system: "https://healthid.abdm.gov.in", value: `demo-${patient.phone.replace(/\s/g, "")}@abdm` },
-      ],
+      identifier: patientIdentifiers,
       name: [{ text: patient.name }],
       gender: patient.gender.toLowerCase(),
       birthDate: String(2026 - patient.age),

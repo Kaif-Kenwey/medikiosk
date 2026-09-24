@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { db } from "@/lib/db"
 import { logAudit, getDemoData, demoNow } from "@/lib/server-data"
+import { guard } from "@/lib/auth"
 
 export const dynamic = "force-dynamic"
 
@@ -21,6 +22,8 @@ function isValidExtracted(v: unknown): v is Record<string, unknown>[] {
  *  A document can only be resolved once — re-validation is rejected (409)
  *  so the audit trail stays truthful. */
 export async function POST(req: NextRequest) {
+  const denied = guard(req, "POST")
+  if (denied) return denied
   try {
     const body = (await req.json()) as {
       id?: string

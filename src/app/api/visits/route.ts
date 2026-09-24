@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { db } from "@/lib/db"
 import { logAudit, mapVisit, getDemoData, demoNow } from "@/lib/server-data"
+import { guard } from "@/lib/auth"
 
 export const dynamic = "force-dynamic"
 
@@ -8,6 +9,8 @@ const VALID_STATUSES = ["WAITING", "TRIAGED", "ESCALATED", "IN_CONSULTATION", "C
 
 /** PATCH — update visit (escalate, start consultation, validate, complete) */
 export async function PATCH(req: NextRequest) {
+  const denied = guard(req, "PATCH")
+  if (denied) return denied
   try {
     const body = (await req.json()) as {
       id?: string

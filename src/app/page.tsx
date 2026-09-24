@@ -28,6 +28,7 @@ import NetworkMap from "@/components/medikiosk/dashboards/NetworkMap"
 import AuditLogView from "@/components/medikiosk/dashboards/AuditLogView"
 import DemoModePanel from "@/components/medikiosk/dashboards/DemoModePanel"
 import DemoGuide from "@/components/medikiosk/dashboards/DemoGuide"
+import SignInDialog from "@/components/medikiosk/auth/SignInDialog"
 import { Button } from "@/components/ui/button"
 import { HeartPulse, RotateCcw, WifiOff } from "lucide-react"
 
@@ -165,6 +166,7 @@ function ViewRouter() {
 export default function Page() {
   const bootstrap = useAppStore((s) => s.bootstrap)
   const retryBootstrap = useAppStore((s) => s.retryBootstrap)
+  const ensureSession = useAppStore((s) => s.ensureSession)
   const navigate = useAppStore((s) => s.navigate)
   const loading = useAppStore((s) => s.loading)
   const bootstrapError = useAppStore((s) => s.bootstrapError)
@@ -175,7 +177,9 @@ export default function Page() {
 
   useEffect(() => {
     bootstrap()
-  }, [bootstrap])
+    // JWT session: reuse an existing cookie or auto-authenticate the kiosk device
+    void ensureSession()
+  }, [bootstrap, ensureSession])
 
   // Accessibility: text scale + high contrast via root element attributes
   useEffect(() => {
@@ -201,6 +205,7 @@ export default function Page() {
       </main>
       <AppFooter />
       <GlobalSearch />
+      <SignInDialog />
       {guideOpen && <DemoGuide />}
     </div>
   )

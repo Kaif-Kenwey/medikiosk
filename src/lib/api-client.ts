@@ -86,6 +86,19 @@ export async function mutate(
   })) as Response
   const json = (await res.json()) as ApiEnvelope
   if (!res.ok || !json.ok) {
+    // 401/403 — surface the sign-in dialog so the user can elevate their role
+    if (res.status === 401 || res.status === 403) {
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(
+          new CustomEvent("mk-auth-required", { detail: { status: res.status, message: json.error } })
+        )
+      }
+      throw new Error(
+        res.status === 401
+          ? "Sign in required for this action"
+          : `Your role cannot perform this action${json.error ? ` — ${json.error}` : ""}`
+      )
+    }
     throw new Error(json.error ?? `Request failed (${res.status})`)
   }
   return { queued: false, res: json }

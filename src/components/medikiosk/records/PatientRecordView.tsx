@@ -19,12 +19,15 @@ import {
   FileUp,
   FlaskConical,
   History,
+  IdCard,
   Loader2,
   MapPin,
   Phone,
   Pill,
   ScanSearch,
   Search,
+  ShieldCheck,
+  Sparkles,
   Stethoscope,
 } from "lucide-react"
 import { toast } from "sonner"
@@ -129,6 +132,9 @@ export default function PatientRecordView() {
   const [bundle, setBundle] = useState<FhirBundle | null>(null)
   const [fhirLoading, setFhirLoading] = useState(false)
   const [copying, setCopying] = useState(false)
+  const [aiSummary, setAiSummary] = useState<{ summary: string; engine: string; disclaimer: string } | null>(null)
+  const [summaryLoading, setSummaryLoading] = useState(false)
+  const [withdrawingConsent, setWithdrawingConsent] = useState(false)
 
   const patient = useMemo<Patient | null>(() => {
     if (!data) return null
@@ -220,6 +226,11 @@ export default function PatientRecordView() {
     return counts
   }, [bundle])
 
+  const patientConsents = useMemo(
+    () => (data ? data.consents.filter((c) => c.patientId === patient?.id) : []),
+    [data, patient]
+  )
+
   async function generateFhir() {
     if (!patient || fhirLoading) return
     setFhirLoading(true)
@@ -248,6 +259,65 @@ export default function PatientRecordView() {
       toast.error("Copy failed", { description: "Clipboard is unavailable in this context." })
     } finally {
       setCopying(false)
+    }
+  }
+
+  async function generateSummary() {
+    if (!patient || summaryLoading) return
+    setSummaryLoading(true)
+    try {
+      const res = await fetch("/api/ai/summary", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ patientId: patient.id }),
+      })
+      const json = (await res.json()) as {
+        ok: boolean
+        error?: string
+        data?: { summary: string; engine: string; disclaimer: string }
+      }
+      if (json.ok && json.data) {
+        setAiSummary(json.data)
+        toast.success("Clinical summary generated", {
+          description: "AI-assisted — for professional review, not a diagnosis.",
+        })
+      } else {
+        toast.error("Summary failed", { description: json.error ?? "Try again" })
+      }
+    } catch {
+      toast.error("Summary failed", { description: "Could not reach the AI service." })
+    } finally {
+      setSummaryLoading(false)
+    }
+  }
+
+  async function withdrawConsent() {
+    if (!patient || withdrawingConsent) return
+    setWithdrawingConsent(true)
+    try {
+      const res = await fetch("/api/consent/withdraw", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ patientId: patient.id }),
+      })
+      const json = await res.json()
+      if (json.ok) {
+        useAppStore.getState().setData(json.data)
+        toast.success("Consent withdrawn", {
+          description: "Recorded in the consent register and audit trail.",
+        })
+      } else {
+        toast.error("Could not withdraw consent", {
+          description:
+            res.status === 401 || res.status === 403
+              ? "Frontline or administrator sign-in required."
+              : json.error ?? "Try again",
+        })
+      }
+    } catch {
+      toast.error("Could not withdraw consent", { description: "Try again." })
+    } finally {
+      setWithdrawingConsent(false)
     }
   }
 
@@ -280,6 +350,9 @@ export default function PatientRecordView() {
 
   const visibleEvents = showAllEvents ? events : events.slice(0, TIMELINE_LIMIT)
 
+  const activeConsent = patientConsents.find((c) => c.granted && !c.withdrawnAt) ?? null
+  const withdrawnConsent = patientConsents.find((c) => c.withdrawnAt) ?? null
+
   // ---------- render ----------
 
   return (
@@ -295,6 +368,15 @@ export default function PatientRecordView() {
                 <Badge variant="outline" className="border-teal-200 bg-teal-50 font-mono text-xs text-teal-700">
                   {patient.mrn}
                 </Badge>
+                {patient.abhaId ? (
+                  <Badge
+                    variant="outline"
+                    className="border-indigo-200 bg-indigo-50 font-mono text-xs text-indigo-700"
+                    title="Ayushman Bharat Health Account (ABDM)"
+                  >
+                    <IdCard className="mr-1 h-3 w-3" /> ABHA: {patient.abhaId}
+                  </Badge>
+                ) : null}
                 {todayVisit && todayVisit.syncStatus === "PENDING" ? (
                   <SyncBadge syncStatus={todayVisit.syncStatus} />
                 ) : null}
@@ -359,6 +441,84 @@ export default function PatientRecordView() {
             {isOffline ? " (Offline: pending items sync later.)" : ""}
           </p>
         </div>
+      </div>
+
+      {/* AI clinical summary */}
+      <div className="rounded-xl border border-teal-200 bg-teal-50/40 p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <p className="flex items-center gap-2 font-semibold text-teal-900">
+            <Sparkles className="h-4 w-4 text-teal-600" /> AI clinical summary
+          </p>
+          <Button
+            size="sm"
+            className="bg-teal-600 text-white hover:bg-teal-700"
+            disabled={summaryLoading}
+            onClick={() => void generateSummary()}
+          >
+            {summaryLoading ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin" /> Summarizing…
+              </>
+            ) : (
+              <>
+                <Sparkles className="h-4 w-4" />
+                {aiSummary ? "Regenerate" : "Generate"}
+              </>
+            )}
+          </Button>
+        </div>
+        {aiSummary ? (
+          <div className="mt-3 space-y-2">
+            <pre className="whitespace-pre-wrap rounded-lg border bg-white p-3 font-sans text-sm leading-relaxed text-foreground">
+              {aiSummary.summary}
+            </pre>
+            <p className="text-xs text-muted-foreground">
+              Engine: {aiSummary.engine} · {aiSummary.disclaimer}
+            </p>
+          </div>
+        ) : (
+          <p className="mt-2 text-sm text-muted-foreground">
+            Generate a fact-only summary of this record for the reviewing healthcare professional —
+            conditions, allergies, latest visit, active referrals, pending diagnostics and follow-ups in one read.
+          </p>
+        )}
+      </div>
+
+      {/* Consent register */}
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-card p-4">
+        <div className="flex items-start gap-3">
+          <ShieldCheck
+            className={cn(
+              "mt-0.5 h-5 w-5 shrink-0",
+              activeConsent ? "text-emerald-600" : "text-red-500"
+            )}
+          />
+          <div>
+            <p className="text-sm font-semibold text-foreground">
+              Consent: {activeConsent ? "GRANTED" : withdrawnConsent ? "WITHDRAWN" : "NOT RECORDED"}
+            </p>
+            <p className="text-xs text-muted-foreground">
+              {activeConsent
+                ? `Kiosk intake consent on record — ${formatDate(activeConsent.at)} (${activeConsent.method.replace(/_/g, " ").toLowerCase()}).`
+                : withdrawnConsent
+                  ? `Withdrawn ${formatDate(withdrawnConsent.withdrawnAt ?? withdrawnConsent.at)} — future kiosk intake requires fresh consent.`
+                  : "No consent artifact found — kiosk intake will capture one."}
+              {" "}Full register in the audit trail.
+            </p>
+          </div>
+        </div>
+        {activeConsent ? (
+          <Button
+            variant="outline"
+            size="sm"
+            className="border-red-200 text-red-700 hover:bg-red-50 hover:text-red-800"
+            disabled={withdrawingConsent}
+            onClick={() => void withdrawConsent()}
+          >
+            {withdrawingConsent ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+            Withdraw consent
+          </Button>
+        ) : null}
       </div>
 
       <Tabs defaultValue="timeline" className="gap-4">

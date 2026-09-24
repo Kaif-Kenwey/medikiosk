@@ -8,7 +8,7 @@
 
 import { useMemo, useState } from "react"
 import { toast } from "sonner"
-import { ArrowRight, ChevronRight, ClipboardList, FileSearch, FileText, Siren } from "lucide-react"
+import { ArrowRight, ChevronRight, ClipboardList, FileSearch, FileText, Siren, Volume2 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
@@ -27,6 +27,7 @@ import {
 } from "@/components/medikiosk/shared"
 import { useAppStore } from "@/lib/store"
 import { makeT } from "@/lib/i18n"
+import { speak, stopSpeaking, SPEAK_LANG } from "@/lib/audio"
 import { statusLabel } from "@/lib/format"
 import type { Patient, TriagePriority } from "@/lib/types"
 import { cn } from "@/lib/utils"
@@ -92,6 +93,21 @@ export default function TriageView() {
       description: "The visit now appears in the doctor's OPD queue.",
     })
     navigate("doctor")
+  }
+
+  // Multilingual text-to-speech of the triage outcome (low-literacy support)
+  const readAloud = () => {
+    const text = [
+      visit.triagePriority
+        ? `AI priority ${visit.triagePriority}.`
+        : "Triage pending.",
+      visit.aiRecommendation ?? "",
+      visit.redFlags.length ? `Warning signs: ${visit.redFlags.join(", ")}.` : "",
+      "This is an AI assistance flag. A healthcare professional will review it.",
+    ]
+      .filter(Boolean)
+      .join(" ")
+    speak(text, SPEAK_LANG[language])
   }
 
   return (
@@ -188,7 +204,27 @@ export default function TriageView() {
       >
         <div className="flex flex-wrap items-center justify-between gap-2">
           <PriorityBadge priority={priority} className="px-3 py-1 text-sm" />
-          <SyncBadge syncStatus={visit.syncStatus} />
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 gap-1.5 text-xs"
+              onClick={readAloud}
+              aria-label="Read triage result aloud"
+            >
+              <Volume2 className="h-3.5 w-3.5" aria-hidden /> Read aloud
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-8 text-xs"
+              onClick={stopSpeaking}
+              aria-label="Stop reading"
+            >
+              Stop
+            </Button>
+            <SyncBadge syncStatus={visit.syncStatus} />
+          </div>
         </div>
 
         <div className="mt-3">

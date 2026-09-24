@@ -95,6 +95,14 @@ interface SymptomPick {
   hi?: string
 }
 
+interface InterviewQ {
+  id: string
+  question: string
+  questionHi: string
+  options: { label: string; labelHi: string; value: string }[]
+  isRedFlagProbe: boolean
+}
+
 // ------------------------------------------------------------
 // Main component
 // ------------------------------------------------------------
@@ -127,6 +135,12 @@ export default function IntakeFlow() {
   const [conditions, setConditions] = useState<string[]>([])
   const [medications, setMedications] = useState<string[]>([])
   const [allergies, setAllergies] = useState<string[]>([])
+  const [consentGiven, setConsentGiven] = useState(false)
+  const [interviewAnswers, setInterviewAnswers] = useState<{ question: string; answer: string; at: string }[]>([])
+  const [interviewPhase, setInterviewPhase] = useState<"idle" | "asking" | "done">("idle")
+  const [currentQ, setCurrentQ] = useState<InterviewQ | null>(null)
+  const [loadingQuestion, setLoadingQuestion] = useState(false)
+  const askedIdsRef = useRef<string[]>([])
   const [submitting, setSubmitting] = useState(false)
 
   // Timers for listening simulation + typewriter (cleaned up on unmount)
@@ -307,12 +321,84 @@ export default function IntakeFlow() {
   }
 
   // ------------------------------------------------------------
+  // Adaptive interview (server-driven, deterministic, patient answers)
+  // ------------------------------------------------------------
+  const fetchNextQuestion = async (askedIds: string[]) => {
+    const symptoms = [
+      ...new Set([...selectedSymptoms.map((s) => s.label), ...extraRedFlags]),
+    ]
+    try {
+      const res = await fetch("/api/ai/interview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ symptoms, severity, asked: askedIds }),
+      })
+      const json = (await res.json()) as { ok: boolean; data?: { done: boolean; question?: InterviewQ } }
+      if (json.ok && json.data && !json.data.done && json.data.question) {
+        setCurrentQ(json.data.question)
+        setInterviewPhase("asking")
+        return true
+      }
+    } catch {
+      // offline / unreachable — interview is skipped silently
+    }
+    setInterviewPhase("done")
+    return false
+  }
+
+  const handleStep2Continue = async () => {
+    if (interviewPhase === "idle") {
+      setLoadingQuestion(true)
+      await fetchNextQuestion(askedIdsRef.current)
+      setLoadingQuestion(false)
+      return // stays on step 2 while the interview runs
+    }
+    setStep(3)
+  }
+
+  const answerQuestion = async (value: string) => {
+    if (!currentQ) return
+    const q = currentQ
+    setInterviewAnswers((prev) => [
+      ...prev,
+      { question: q.question, answer: value, at: new Date().toISOString() },
+    ])
+    // A "Yes" on a red-flag probe feeds the triage red-flag list
+    if (q.isRedFlagProbe && value === "Yes") {
+      const labelMap: Record<string, string> = {
+        breathing: "Difficulty breathing",
+        "chest-pain": "Chest pain",
+        confusion: "Confusion",
+        vomiting: "Persistent vomiting",
+      }
+      const label = labelMap[q.id]
+      if (label) setExtraRedFlags((prev) => (prev.includes(label) ? prev : [...prev, label]))
+    }
+    askedIdsRef.current = [...askedIdsRef.current, q.id]
+    setLoadingQuestion(true)
+    setCurrentQ(null)
+    await fetchNextQuestion(askedIdsRef.current)
+    setLoadingQuestion(false)
+  }
+
+  const skipInterview = () => {
+    setCurrentQ(null)
+    setInterviewPhase("done")
+  }
+
+  // ------------------------------------------------------------
   // Submit
   // ------------------------------------------------------------
   const handleSubmit = async () => {
     if (!canContinueDetails) {
       toast.error("Please complete the required fields", {
         description: "Name, a valid age and phone number are required.",
+      })
+      return
+    }
+    if (!consentGiven) {
+      toast.error("Consent is required", {
+        description: "Please review and accept the data-use notice to continue.",
       })
       return
     }
@@ -343,6 +429,8 @@ export default function IntakeFlow() {
       medications,
       allergies,
       transcript: fullTranscript || undefined,
+      consent: true,
+      interviewAnswers: interviewAnswers.length ? interviewAnswers : undefined,
     }
     const outcome = await submitIntake(payload)
     setSubmitting(false)
@@ -688,12 +776,74 @@ export default function IntakeFlow() {
                 </AINote>
               </>
             )}
+
+            {/* Adaptive interview — AI asks, the patient answers */}
+            {interviewPhase === "asking" && currentQ && (
+              <div className="space-y-3 rounded-xl border border-teal-200 bg-teal-50/50 p-4">
+                <KioskBubble>
+                  <div>
+                    <p className="text-lg font-medium text-foreground">{currentQ.question}</p>
+                    {currentQ.questionHi && (
+                      <p className="text-sm text-muted-foreground">{currentQ.questionHi}</p>
+                    )}
+                  </div>
+                </KioskBubble>
+                <div className="flex flex-wrap gap-2 pl-13">
+                  {currentQ.options.map((o) => (
+                    <button
+                      key={o.value}
+                      type="button"
+                      onClick={() => void answerQuestion(o.value)}
+                      className="min-h-12 rounded-xl border border-teal-300 bg-white px-5 py-2.5 text-base font-medium text-teal-900 transition-colors hover:bg-teal-100"
+                    >
+                      {o.label}
+                      {o.labelHi ? <span className="ml-1.5 text-sm text-teal-700">({o.labelHi})</span> : null}
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={skipInterview}
+                    className="min-h-12 rounded-xl px-3 py-2.5 text-sm text-muted-foreground underline hover:text-foreground"
+                  >
+                    Skip remaining questions
+                  </button>
+                </div>
+                <AINote>
+                  Follow-up question chosen by the AI from your answers so far. A “Yes” to a
+                  warning-sign question is always double-checked by a health worker.
+                </AINote>
+              </div>
+            )}
+            {interviewPhase === "asking" && !currentQ && (
+              <div className="flex items-center gap-2 rounded-xl border bg-muted/50 p-3 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> Preparing next question…
+              </div>
+            )}
+            {interviewPhase === "done" && interviewAnswers.length > 0 && (
+              <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">
+                <Check className="mr-1.5 inline h-4 w-4" aria-hidden />
+                {interviewAnswers.length} adaptive question{interviewAnswers.length === 1 ? "" : "s"} answered — answers
+                will be part of this visit record.
+              </div>
+            )}
+
             <Button
               type="button"
-              onClick={() => setStep(3)}
+              disabled={loadingQuestion}
+              onClick={() => void handleStep2Continue()}
               className="h-14 w-full bg-teal-600 text-lg font-semibold text-white hover:bg-teal-700"
             >
-              {t("confirmNext")} <ArrowRight className="h-5 w-5" aria-hidden />
+              {loadingQuestion ? (
+                <>
+                  <Loader2 className="h-5 w-5 animate-spin" aria-hidden /> Checking…
+                </>
+              ) : interviewPhase === "asking" ? (
+                "Waiting for your answers…"
+              ) : (
+                <>
+                  {t("confirmNext")} <ArrowRight className="h-5 w-5" aria-hidden />
+                </>
+              )}
             </Button>
           </section>
         )}
@@ -872,6 +1022,36 @@ export default function IntakeFlow() {
               values={allergies}
               onChange={setAllergies}
             />
+
+            {/* DPDP-style informed consent — required before data is recorded */}
+            <div
+              className={cn(
+                "rounded-xl border p-4 transition-colors",
+                consentGiven ? "border-emerald-300 bg-emerald-50" : "border-teal-300 bg-teal-50/60"
+              )}
+            >
+              <div className="flex items-start gap-3">
+                <Checkbox
+                  id="mk-consent"
+                  checked={consentGiven}
+                  onCheckedChange={(v) => setConsentGiven(v === true)}
+                  className="mt-0.5 h-5 w-5"
+                  aria-label="Consent to record this visit"
+                />
+                <label htmlFor="mk-consent" className="cursor-pointer text-sm leading-relaxed">
+                  <span className="font-semibold text-foreground">
+                    I agree to my health information being recorded
+                    {language === "hi" ? " (मैं सहमत हूँ)" : language === "bn" ? "(আমি সম্মত)" : ""}
+                  </span>
+                  <span className="mt-1 block text-muted-foreground">
+                    This kiosk records your symptoms, phone number and health history so the care
+                    team can treat and follow up with you. Data is stored securely and encrypted,
+                    shared only with your treating health workers, and you may withdraw consent at
+                    any time. आपकी जानकारी सुरक्षित रखी जाती है और केवल इलाज के लिए उपयोग होती है।
+                  </span>
+                </label>
+              </div>
+            </div>
 
             <Button
               type="button"

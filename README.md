@@ -103,11 +103,11 @@ No login required: switch roles from the header menu (a demo feature).
 
 1. **Kiosk** → choose **हिन्दी** → *Start Healthcare Assistance*
 2. Tap the **mic** — "listening" → Hindi transcript types out → AI extracts **Fever + Difficulty breathing, 3 days**
-3. Confirm → adaptive red-flag checklist → **Demo: Sita Devi** demo-fill → *Known patient matched — previous visits found* (continuity!)
-4. **AI triage: HIGH** — red flag, 93% confidence → **Escalate**
+3. Confirm → adaptive red-flag checklist → **AI asks adaptive follow-up questions** (patient answers Yes/No) → **Demo: Sita Devi** demo-fill → *Known patient matched — previous visits found* (continuity!)
+4. **Consent checkbox** (DPDP-style) → submit → **AI triage: HIGH** — red flag, 93% confidence → **Escalate**
 5. **Emergency console** — Verify Evidence → Escalate to Doctor → Start Referral → escalation timeline completes
-6. **Doctor dashboard** — case in queue → Review → longitudinal record shows Aug lab (Hb 10.2), June hospital visit
-7. **Document intelligence** — scan CBC report → OCR extracts 6 fields → **Human validation** → confirm → record updated
+6. **Doctor dashboard** — case in queue → Review → longitudinal record shows Aug lab (Hb 10.2), June hospital visit → generate the **AI clinical summary** + see the **consent register**
+7. **Document intelligence** — scan CBC report (or upload a real photo → vision OCR) → fields extracted → **Human validation** with **AI consistency check** → confirm → record updated
 8. **Diagnostics** — CBC ordered → result attached → reviewed into record
 9. **Medicines** — check Metformin: OUT at Sub-Centre, alternative facility shown
 10. **Follow-ups** — auto-created HIGH-RISK task due 25 Sep
@@ -134,37 +134,46 @@ Single-page App Router app: **only `/` is user-visible**; the 16 views (kiosk, i
 src/
 ├── app/
 │   ├── page.tsx              # Single visible route: client-side view router (16 views)
-│   └── api/                  # REST API routes
+│   └── api/                  # REST API routes (all mutations JWT-guarded + RBAC-checked)
 │       ├── bootstrap/        #   GET  — full demo dataset (auto-seeds on first run)
-│       ├── intake/           #   POST — patient + visit + deterministic AI triage
+│       ├── auth/             #   POST login (JWT cookie) · GET session · POST logout
+│       ├── intake/           #   POST — consent-gated patient + visit + deterministic AI triage
 │       ├── ai/extract/       #   POST — multilingual symptom extraction (deterministic NLP)
 │       ├── ai/triage/        #   POST — rules engine + optional LLM narrative (fallback safe)
-│       ├── documents/        #   POST — simulated OCR;  /validate — human validation
+│       ├── ai/interview/     #   POST — adaptive interview: next question from what's known
+│       ├── ai/consistency/   #   POST — contradiction detection (symptoms ↔ docs ↔ record)
+│       ├── ai/summary/       #   POST — fact-only clinical record summary (LLM polish, safe fallback)
+│       ├── documents/        #   POST — vision OCR (real, from photo) or template;  /validate — human validation
+│       ├── timeline/         #   GET  — merged clinical timeline (?patientId=…)
+│       ├── consent/withdraw/ #   POST — withdraw kiosk consent (auditable artifact)
 │       ├── referrals/        #   POST/PATCH — create + facility status workflow
 │       ├── diagnostics/      #   POST/PATCH — order + workflow + demo results
 │       ├── followups/        #   PATCH — contact/reschedule/complete/escalate
 │       ├── visits/           #   PATCH — escalate/validate/complete (auto follow-up on escalate)
-│       ├── demo/reset/       #   POST — instant demo reset
+│       ├── demo/reset/       #   POST — instant demo reset (ADMIN only)
 │       └── fhir/             #   GET  — FHIR R4 Bundle export (?patientId=…)
 ├── components/medikiosk/
-│   ├── AppShell.tsx          # Header (role/lang/search/offline/a11y/demo) + sticky footer
+│   ├── AppShell.tsx          # Header (session/lang/search/offline/a11y/demo) + sticky footer
+│   ├── auth/SignInDialog.tsx # JWT sign-in dialog (kiosk auto-session + staff PINs)
 │   ├── shared.tsx            # Shared primitives (badges, stat cards, banners…)
-│   ├── journey/              # Kiosk home, intake, triage, emergency
-│   ├── records/              # Document scan, validation, patient record, global search
+│   ├── journey/              # Kiosk home, intake (+ adaptive interview), triage (+ read-aloud), emergency
+│   ├── records/              # Document scan (photo upload), validation (+ AI consistency), patient record (+ AI summary, consent), global search
 │   ├── care/                 # Referrals, diagnostics, medicines, follow-ups
 │   └── dashboards/           # Doctor, facility, network map, audit, demo mode + guide
 └── lib/
-    ├── store.ts              # Zustand — navigation, roles, offline queue, mutations
-    ├── ai-engine.ts          # Deterministic rules engine + simulated OCR + LLM fallback
+    ├── store.ts              # Zustand — navigation, JWT session, offline queue, mutations
+    ├── ai-engine.ts          # Rules engine + adaptive interview + contradiction detection + summaries + vision OCR
+    ├── auth.ts               # HS256 JWT (node:crypto) + RBAC permission matrix
+    ├── crypto.ts             # AES-256-GCM field encryption + blind index
     ├── types.ts              # Shared contracts
     ├── i18n.ts               # en / hi / bn dictionaries
-    ├── api-client.ts         # Offline queue (localStorage) + sync replay
-    ├── audio.ts              # Kiosk audio guidance (speech synthesis)
+    ├── api-client.ts         # Offline queue (localStorage) + sync replay + 401 handling
+    ├── audio.ts              # Multilingual TTS via speech synthesis (works offline)
     ├── demo-scenarios.ts     # The 6 guided judge scenarios
     ├── format.ts             # Dates, numbers, labels
     ├── server-data.ts        # Prisma mappers, audit logging, demo clock
     ├── seed.ts               # Fictional SIH demo dataset (demo clock: 23 Sep 2026)
-    ├── fhir.ts               # FHIR R4 / ABDM-aligned bundle mapper
+    ├── fhir.ts               # FHIR R4 / ABDM-aligned bundle mapper (ABHA identifiers)
     ├── db.ts                 # Prisma client singleton
     └── utils.ts              # cn() and small helpers
 ```
@@ -176,55 +185,98 @@ Every mutation returns the full refreshed dataset (`{ok, data}`) so the UI is al
 | Endpoint | Method | Body / Query |
 |---|---|---|
 | `/api/bootstrap` | GET | — (seeds on first call) |
+| `/api/auth/login` | POST | `{ role, pin? }` → sets `mk_session` httpOnly JWT cookie (kiosk needs no PIN) |
+| `/api/auth/session` | GET | — → current session or 401 |
+| `/api/auth/logout` | POST | — clears cookie |
 | `/api/ai/extract` | POST | `{ text, language? }` |
 | `/api/ai/triage` | POST | `{ symptoms[], durationDays?, severity?, age, conditions[] }` |
-| `/api/intake` | POST | `{ name, age, gender, phone, chiefComplaint, symptoms[], durationDays?, severity?, conditions[], allergies[], medications[], clientRef? }` |
-| `/api/documents` | POST | `{ patientId, type, label? }` |
+| `/api/ai/interview` | POST | `{ symptoms[], severity, asked[] }` → next adaptive question or `{ done: true }` |
+| `/api/ai/consistency` | POST | `{ patientId, documentId? }` → contradiction findings (CRITICAL/WARNING/INFO) |
+| `/api/ai/summary` | POST | `{ patientId }` → fact-only clinical summary |
+| `/api/intake` | POST | `{ name, age, gender, phone, chiefComplaint, symptoms[], durationDays?, severity?, conditions[], allergies[], medications[], consent: true, abhaId?, interviewAnswers?, clientRef? }` — **401 without session, 400 without consent** |
+| `/api/documents` | POST | `{ patientId, kind, fileName?, imageDataUrl? }` — with image → vision OCR, without → template |
 | `/api/documents/validate` | POST | `{ id, action: ACCEPT (or VALIDATE) \| REJECT, editedExtracted?, validatedBy? }` — one-time validation (409 on re-validation) |
 | `/api/referrals` | POST / PATCH | POST: `{ patientId, reason, destination, priority?, origin? }` · PATCH: `{ id, status, by?, note? }` — terminal states locked |
-| `/api/diagnostics` | POST / PATCH | POST: `{ patientId, testType, orderedBy? }` · PATCH: `{ id, status }` — REVIEWED requires a result |
+| `/api/diagnostics` | POST / PATCH | POST: `{ patientId, testType, orderedBy? }` · PATCH: `{ id, status }` — REVIEWED requires a result — **doctor/admin only** |
 | `/api/followups` | PATCH | `{ id, status, by?, notes?, nextDue? }` |
-| `/api/visits` | PATCH | `{ id, status, … }` |
-| `/api/demo/reset` | POST | — |
+| `/api/visits` | PATCH | `{ id, status, … }` — frontline/doctor/admin |
+| `/api/consent/withdraw` | POST | `{ patientId }` — frontline/admin; marks latest consent withdrawn |
+| `/api/timeline` | GET | `?patientId=…` → merged chronological clinical events |
+| `/api/demo/reset` | POST | — **ADMIN only (403 otherwise)** |
 | `/api/fhir` | GET | `?patientId=…` → FHIR R4 document Bundle (Composition + resources) |
+
+**RBAC matrix** (enforced server-side on every mutation): kiosk → intake + document scan · frontline → validate documents/visits, referrals, follow-ups · doctor → diagnostics + clinical updates · admin → everything + demo reset. Read-only GETs stay open (shared kiosk tablet).
 
 ## Technology Stack
 
-- **Next.js 16** (App Router) + **TypeScript 5** + **React 19**
+**What the prototype runs on:**
+
+- **Next.js 16** (App Router; Node.js REST API via Route Handlers) + **TypeScript 5** + **React 19**
 - **Tailwind CSS 4** + **shadcn/ui** (New York) + **Lucide icons** — healthcare teal design system
-- **Prisma ORM + SQLite**
+- **Prisma ORM + SQLite** (document-style access patterns; Prisma's connector model maps 1:1 to MongoDB — see below)
 - **Zustand** state management
+- **z-ai-web-dev-sdk** (server-side only) — LLM narrative + **vision OCR** on real document photos, always with deterministic fallback
 - **recharts** dashboards, **framer-motion** micro-interactions, **sonner** toasts
-- **z-ai-web-dev-sdk** (server-side only) — optional LLM narrative enrichment with deterministic fallback
 
-## Demo Credentials
+**Requested stack → what's implemented (honest capability map):**
 
-No login — role switching is a demo feature (header menu):
-
-| Role | Identity |
+| Requested | Status in this prototype |
 |---|---|
-| Kiosk · Patient | Self-service (Sita Devi / Rahul Kumar demo-fills in intake) |
-| Frontline Worker | ANM Sunita Sharma (Rampur Sub-Centre) |
-| Doctor | Dr. A. Prasad (Gopalganj District Hospital) |
-| Facility Administrator | Admin view (Rampur PHC) |
+| React.js / Next.js + Tailwind | **Implemented** — exactly this |
+| Node.js + Express.js REST API | **Implemented** as Node.js REST API via Next.js Route Handlers (same runtime, one deployable; no separate Express process needed) |
+| MongoDB | **Integration-ready** — Prisma + SQLite in the sandbox; the schema uses JSON-string document columns and Prisma supports `provider = "mongodb"` with the same models for production |
+| Multilingual ASR | **Simulated** voice input (scripted multilingual transcripts); the extraction API behind it is real. Production: Bhashini/AI4Bharat |
+| Multilingual TTS | **Implemented** — browser speech synthesis (hi-IN/bn-IN/en-IN), read-aloud on kiosk + triage results, works offline |
+| LLM/NLP | **Implemented** — z-ai SDK for narrative/summary/OCR with deterministic fallback on every path |
+| Medical Entity Extraction | **Implemented** — `/api/ai/extract` (multilingual symptom dictionary + duration parsing) |
+| Adaptive Interview | **Implemented** — `/api/ai/interview` picks the next question from what's known; red-flag answers feed triage; Q&A stored on the visit |
+| Red-Flag Detection | **Implemented** — deterministic rule engine (symptom red flags, pediatric/elderly/pregnancy rules) + adaptive probes; HIGH forces escalation workflow |
+| Contradiction Detection | **Implemented** — `/api/ai/consistency` cross-checks stated symptoms vs transcript negations vs scanned documents vs recorded allergies/medications |
+| Clinical Summarization | **Implemented** — `/api/ai/summary` fact-only record summary (LLM polish, facts never invented) |
+| OCR / Prescription & Report Extraction | **Implemented (real AI)** — upload a photo of a document → vision model reads the actual image into structured fields (fallback: simulated template) + human validation workflow |
+| Clinical Timeline Generation | **Implemented** — merged chronological timeline in the record view + `/api/timeline` endpoint |
+| Referral Workflow / Queue Mgmt / Follow-ups / Diagnostic Coordination / Medicine Availability | **Implemented** — full workflows with dashboards |
+| FHIR R4 | **Implemented** — R4 document Bundle export (Composition, Patient, Encounter, Observation, MedicationRequest, ServiceRequest, Task, DocumentReference) |
+| ABDM-compatible architecture | **Integration-ready** — ABHA address field on patients + FHIR identifier mapping; consent artifacts + audit trail align with ABDM consent-manager patterns; **not** a registered HIP connection |
+| JWT / RBAC | **Implemented** — HS256 JWT (node:crypto) in httpOnly cookie, server-enforced permission matrix per route/role, 401/403 surfaced via sign-in dialog |
+| Encryption | **Implemented** — AES-256-GCM at-rest encryption of patient phone numbers + HMAC blind index for continuity match without decryption |
+| Consent | **Implemented** — DPDP-style consent checkbox at intake, stored consent artifacts, withdrawable (frontline/admin), audited |
+| Audit Logs | **Implemented** — every action (intake, triage, validation, sync, consent, sessions) recorded with actor/role/time |
+| Offline-tolerant workflow; local queue; sync on reconnect | **Implemented** — localStorage action queue, optimistic UI, replay on reconnect with per-record success/failure accounting |
+| 108 ambulance dispatch, SMS, real ABDM/HIP registration | **Simulated / out of scope** (clearly labelled in the UI) |
+
+## Demo Credentials (JWT sessions)
+
+Kiosk devices auto-authenticate in the **KIOSK** role (no PIN). Elevated roles sign in via the header → *Sign in as staff* (demo PINs shown in the dialog):
+
+| Role | Identity | Demo PIN |
+|---|---|---|
+| Kiosk · Patient | Kiosk Device (auto-session) | — none — |
+| Frontline Worker | ANM Sunita Sharma (Rampur Sub-Centre) | `1234` |
+| Doctor | Dr. A. Prasad (Gopalganj District Hospital) | `2345` |
+| Facility Administrator | Facility Admin (reset, full admin) | `3456` |
 
 ## Mock Integrations (clearly identified)
 
 | Capability | Status |
 |---|---|
-| Intake, triage rules, records, referrals, diagnostics, follow-ups, dashboards, offline queue, audit | **Implemented** (working end-to-end) |
-| Voice input | **Simulated** — scripted listening/typing UX (Web Speech API can be added; extraction API is real) |
-| OCR / document scan | **Simulated** — deterministic template extraction; validation workflow is real |
+| Intake, triage rules, adaptive interview, contradiction detection, summaries, records, referrals, diagnostics, follow-ups, dashboards, offline queue, audit, JWT/RBAC, consent, field encryption | **Implemented** (working end-to-end) |
+| Voice input (ASR) | **Simulated** — scripted listening/typing UX (Web Speech API can be added; the extraction API is real) |
+| OCR from document photos | **Real AI** (vision model) with a simulated template fallback; validation workflow is human |
+| TTS read-aloud | **Implemented** — browser speech synthesis, multilingual, offline-capable |
 | 108 ambulance dispatch | **Simulated** dialog |
-| LLM narrative | **Optional** — z-ai-web-dev-sdk with deterministic fallback; never decides safety |
-| FHIR R4 / ABDM | **Integration-ready abstraction** — internal JSON model maps to FHIR resources (Patient, Encounter, Observation, MedicationRequest, ServiceRequest, Task, DocumentReference); **not** a live ABDM/HIP connection |
-| ABHA / health-ID auth, SMS, real pharmacy ordering, real lab HL7 feeds | **Out of scope for prototype** |
+| LLM narrative / summary / vision OCR | **Optional** — z-ai-web-dev-sdk with deterministic fallback; never decides safety |
+| FHIR R4 | **Implemented** export (demo abstraction) |
+| ABDM / ABHA | **Integration-ready** — ABHA identifier mapping + consent artifacts + audit; **not** a registered ABDM/HIP connection |
+| SMS, real pharmacy ordering, real lab HL7 feeds, ABDM M1–M3 registration | **Out of scope for prototype** |
 
 ## Production Requirements (beyond this prototype)
 
-- NextAuth/JWT-backed RBAC replacing the demo role switcher; facility-scoped data access
-- Real ASR (Indic languages, e.g. Bhashini/AI4Bharat models) and TTS
-- Registered ABDM M1/M2/M3 integration (HIP/SRC credentials, consent manager)
+- Replace demo PIN identities with hashed credentials + MFA; facility-scoped data access policies
+- Real ASR (Indic languages, e.g. Bhashini/AI4Bharat models) alongside the implemented TTS
+- Registered ABDM M1/M2/M3 integration (HIP/SRC credentials, consent manager) — the consent artifact model is already aligned
 - Hospital information system / lab integration (HL7 v2 / FHIR APIs)
+- MongoDB (or PostgreSQL) deployment — Prisma models carry over; JSON columns map to document fields
 - Conflict-aware sync (server reconciles clientRefs, per-record merge)
-- Postgres/MySQL, encryption at rest, DPIA + data-locality compliance under DPDP Act
+- Managed key rotation for the AES-256-GCM field encryption; DPIA + data-locality compliance under DPDP Act
+- HTTPS-only deployment (enable the `secure` cookie flag) + rate limiting on auth endpoints

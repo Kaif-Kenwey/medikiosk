@@ -36,7 +36,9 @@ export interface Patient {
   nameHi: string | null
   age: number
   gender: string
-  phone: string
+  phone: string // decrypted for display — stored AES-256-GCM encrypted at rest
+  phoneHash?: string | null
+  abhaId: string | null // ABDM / ABHA address (INTEGRATION-READY)
   village: string
   district: string
   language: Language
@@ -64,9 +66,17 @@ export interface Visit {
   frontlineWorker: string | null
   validatedBy: string | null
   clinicalNote: string | null
+  interviewAnswers: InterviewAnswer[]
   syncStatus: SyncStatus
   createdAt: string
   updatedAt: string
+}
+
+/** One adaptive-interview question + the patient's confirmed answer */
+export interface InterviewAnswer {
+  question: string
+  answer: string
+  at: string
 }
 
 export interface ReferralHistoryEntry {
@@ -178,6 +188,19 @@ export interface AuditEvent {
   createdAt: string
 }
 
+/** DPDP-style consent artifact captured at the kiosk */
+export interface ConsentRecord {
+  id: string
+  patientId: string
+  visitId: string | null
+  scope: "KIOSK_INTAKE" | "DATA_SHARING_REFERRAL"
+  granted: boolean
+  method: "KIOSK_CHECKBOX" | "VERBAL_WORKER"
+  language: Language
+  at: string
+  withdrawnAt: string | null
+}
+
 export interface TriageResult {
   priority: TriagePriority
   reason: string
@@ -199,6 +222,7 @@ export interface DemoData {
   medicines: MedicineStock[]
   followUps: FollowUp[]
   documents: DocumentRecord[]
+  consents: ConsentRecord[]
   audits: AuditEvent[]
   serverNow: string
 }
@@ -224,6 +248,9 @@ export interface IntakePayload {
   transcript?: string
   frontlineWorker?: string
   clientRef?: string // offline temp id for reconciliation on sync
+  consent: boolean // DPDP-style informed consent — intake is rejected without it
+  abhaId?: string // ABDM / ABHA address (optional at intake)
+  interviewAnswers?: InterviewAnswer[] // adaptive interview Q&A transcript
 }
 
 /** POST /api/ai/extract response */

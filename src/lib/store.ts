@@ -3,7 +3,7 @@
 // ============================================================
 // MediKiosk — Client state (Zustand)
 // One store for UI navigation, accessibility prefs, offline mode,
-// demo dataset and domain mutations (optimistic when offline).
+// JWT session, demo dataset and domain mutations (optimistic when offline).
 // ============================================================
 
 import { create } from "zustand"
@@ -64,6 +64,9 @@ interface IntakeForm {
   medications: string[]
   allergies: string[]
   transcript?: string
+  consent: boolean
+  interviewAnswers?: { question: string; answer: string; at: string }[]
+  abhaId?: string
 }
 
 export interface IntakeOutcome {
@@ -73,6 +76,14 @@ export interface IntakeOutcome {
   returningPatient: boolean
 }
 
+/** Client view of the JWT session (httpOnly cookie holds the token itself) */
+export interface ClientSession {
+  role: Role
+  name: string
+  facility?: string | null
+  expiresAt?: string
+}
+
 interface AppState {
   hydrated: boolean
   loading: boolean
@@ -80,6 +91,9 @@ interface AppState {
   bootstrapError: boolean
   view: View
   role: Role
+  session: ClientSession | null
+  authDialogOpen: boolean
+  authDialogPreset: Role | null
   language: Language
   textScale: TextScale
   highContrast: boolean
@@ -107,6 +121,13 @@ interface AppState {
   setData: (d: DemoData) => void
   bootstrap: () => Promise<void>
   retryBootstrap: () => Promise<void>
+  /** Auto-authenticate the kiosk device (KIOSK role) if no session exists */
+  ensureSession: () => Promise<void>
+  openAuthDialog: (preset?: Role | null) => void
+  closeAuthDialog: () => void
+  /** Sign in with a facility identity. Returns true on success. */
+  signIn: (role: Role, pin?: string) => Promise<boolean>
+  signOut: () => Promise<void>
   resetDemo: () => Promise<void>
   setActivePatient: (patientId: string | null, visitId?: string | null) => void
   setActiveReferral: (id: string | null) => void
@@ -158,6 +179,7 @@ interface AppState {
     patientId: string
     kind: "LAB_REPORT" | "PRESCRIPTION" | "MEDICAL_RECORD"
     fileName?: string
+    imageDataUrl?: string
   }) => Promise<DocumentRecord | null>
   validateDocument: (args: {
     id: string
@@ -173,6 +195,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   bootstrapError: false,
   view: "kiosk",
   role: "kiosk",
+  session: null,
+  authDialogOpen: false,
+  authDialogPreset: null,
   language: "en",
   textScale: "normal",
   highContrast: false,
@@ -287,6 +312,69 @@ export const useAppStore = create<AppState>((set, get) => ({
     await get().bootstrap()
   },
 
+  // ---------- auth (JWT session) ----------
+
+  ensureSession: async () => {
+    try {
+      const res = await fetch("/api/auth/session", { cache: "no-store" })
+      if (res.ok) {
+        const json = await res.json()
+        const s = (json.meta as { session?: ClientSession })?.session
+        if (s) {
+          set({ session: s, role: s.role })
+          return
+        }
+      }
+    } catch {
+      // server unreachable — stay signed out; offline queue still works
+    }
+    // No valid session — auto-authenticate as the patient-facing kiosk device
+    try {
+      await get().signIn("kiosk")
+    } catch {
+      // non-fatal: kiosk keeps working read-only until server returns
+    }
+  },
+
+  openAuthDialog: (preset = null) => set({ authDialogOpen: true, authDialogPreset: preset }),
+  closeAuthDialog: () => set({ authDialogOpen: false, authDialogPreset: null }),
+
+  signIn: async (role, pin) => {
+    try {
+      const res = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ role, pin }),
+      })
+      const json = await res.json()
+      if (!res.ok || !json.ok) {
+        toast.error("Sign in failed", { description: json.error ?? "Try again" })
+        return false
+      }
+      const s = (json.meta as { session?: ClientSession })?.session
+      set({ session: s ?? { role, name: role }, role, authDialogOpen: false, authDialogPreset: null })
+      if (role !== "kiosk") {
+        toast.success(`Signed in as ${s?.name ?? role}`, {
+          description: "JWT session issued — actions are now attributed in the audit trail.",
+        })
+      }
+      return true
+    } catch {
+      toast.error("Sign in failed", { description: "Could not reach the facility server." })
+      return false
+    }
+  },
+
+  signOut: async () => {
+    try {
+      await fetch("/api/auth/logout", { method: "POST" })
+    } catch {
+      // cookie clear is best-effort
+    }
+    set({ session: null, role: "kiosk" })
+    toast.info("Signed out", { description: "Kiosk device session ended." })
+  },
+
   resetDemo: async () => {
     set({ loading: true })
     try {
@@ -305,6 +393,13 @@ export const useAppStore = create<AppState>((set, get) => ({
           role: "kiosk",
         })
         toast.success("Demo reset complete", { description: "Environment restored to the starting state." })
+      } else if (res.status === 401 || res.status === 403) {
+        set({ authDialogOpen: true, authDialogPreset: "admin" })
+        toast.error("Administrator sign-in required", {
+          description: "Demo reset is restricted to the Facility Administrator role.",
+        })
+      } else {
+        toast.error("Reset failed", { description: json.error ?? "Try again" })
       }
     } catch {
       toast.error("Reset failed")
@@ -352,6 +447,8 @@ export const useAppStore = create<AppState>((set, get) => ({
           age: form.age,
           gender: form.gender,
           phone: form.phone,
+          phoneHash: null,
+          abhaId: null,
           village: form.village,
           district: form.district,
           language: form.language,
@@ -378,6 +475,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           frontlineWorker: null,
           validatedBy: null,
           clinicalNote: null,
+          interviewAnswers: (form.interviewAnswers ?? []) as never,
           syncStatus: "PENDING" as const,
           createdAt: now,
           updatedAt: now,
@@ -391,12 +489,24 @@ export const useAppStore = create<AppState>((set, get) => ({
           detail: "Captured offline — pending sync",
           createdAt: now,
         }
+        const tempConsent = {
+          id: `local-c-${clientRef}`,
+          patientId: tempPatient.id,
+          visitId: tempVisit.id,
+          scope: "KIOSK_INTAKE" as const,
+          granted: true,
+          method: "KIOSK_CHECKBOX" as const,
+          language: form.language,
+          at: now,
+          withdrawnAt: null,
+        }
         if (d) {
           set({
             data: {
               ...d,
               patients: [tempPatient, ...d.patients],
               visits: [tempVisit, ...d.visits],
+              consents: [tempConsent, ...d.consents],
               audits: [tempAudit, ...d.audits],
             },
           })
@@ -650,8 +760,12 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
       set({ data: res!.data })
       const doc = (res!.meta as { document: DocumentRecord }).document
+      const engine = (res!.meta as { engine?: string }).engine ?? "simulated-template"
       toast.success(`OCR complete — ${doc.extracted.length} fields extracted`, {
-        description: "Fields are not clinically verified until a human validates them.",
+        description:
+          engine === "vision-ocr"
+            ? "Read from the uploaded image by the vision model. Not clinically verified until a human validates them."
+            : "Fields are not clinically verified until a human validates them.",
       })
       set({ activeDocumentId: doc.id })
       return doc

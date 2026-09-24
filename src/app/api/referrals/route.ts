@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { db } from "@/lib/db"
 import { logAudit, mapReferral, getDemoData, demoNow } from "@/lib/server-data"
+import { guard } from "@/lib/auth"
 import type { ReferralHistoryEntry } from "@/lib/types"
 
 export const dynamic = "force-dynamic"
@@ -15,6 +16,8 @@ const TERMINAL_STATUSES = ["COMPLETED", "CANCELLED"]
 
 /** POST — create referral; PATCH — update referral status (facility workflow) */
 export async function POST(req: NextRequest) {
+  const denied = guard(req, "POST")
+  if (denied) return denied
   try {
     const body = (await req.json()) as {
       patientId?: string
@@ -85,6 +88,8 @@ export async function POST(req: NextRequest) {
 }
 
 export async function PATCH(req: NextRequest) {
+  const denied = guard(req, "PATCH")
+  if (denied) return denied
   try {
     const body = (await req.json()) as {
       id?: string
