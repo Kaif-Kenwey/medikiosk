@@ -150,14 +150,14 @@ export function AppHeader() {
           <Button
             variant="outline"
             size="sm"
-            className="hidden h-9 gap-2 text-muted-foreground md:flex md:w-64 md:justify-start"
+            className="hidden h-9 gap-2 text-muted-foreground xl:flex xl:w-64 xl:justify-start"
             onClick={() => setSearchOpen(true)}
           >
             <Search className="h-4 w-4" />
             <span className="flex-1 text-left text-sm">{t("searchPatients")}</span>
             <kbd className="pointer-events-none rounded border bg-muted px-1.5 font-mono text-[10px]">⌘K</kbd>
           </Button>
-          <Button variant="ghost" size="icon" className="md:hidden" onClick={() => setSearchOpen(true)} aria-label="Search">
+          <Button variant="ghost" size="icon" className="xl:hidden" onClick={() => setSearchOpen(true)} aria-label="Search">
             <Search className="h-5 w-5" />
           </Button>
 
