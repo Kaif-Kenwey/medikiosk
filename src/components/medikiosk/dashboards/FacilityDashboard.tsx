@@ -167,7 +167,7 @@ export default function FacilityDashboard() {
         <StatCard label="Patients served" value={data.patients.length} sub="registered in system" icon={<Users className="h-4 w-4" />} tone="teal" />
         <StatCard label="Pending referrals" value={pendingReferrals} sub="PENDING + ACCEPTED" icon={<Send className="h-4 w-4" />} tone="amber" />
         <StatCard label="Follow-up completion" value={`${followUpCompletion}%`} sub={`${completedFollowUps} of ${totalFollowUps}`} icon={<CheckCircle2 className="h-4 w-4" />} tone="green" />
-        <StatCard label="Avg intake time" value="18 min" sub="kiosk median" icon={<Timer className="h-4 w-4" />} tone="default" />
+        <StatCard label="Avg intake time" value="≈18 min" sub="kiosk median (demo estimate)" icon={<Timer className="h-4 w-4" />} tone="default" />
         <StatCard label="Red-flag escalations" value={escalated} sub="awaiting doctor" icon={<AlertTriangle className="h-4 w-4" />} tone="red" />
         <StatCard label="Medicine alerts" value={alertMedicineNames.size} sub="LOW or OUT items" icon={<Pill className="h-4 w-4" />} tone="amber" />
       </div>
@@ -176,7 +176,7 @@ export default function FacilityDashboard() {
       <div className="grid gap-4 lg:grid-cols-2 xl:grid-cols-3">
         <Card className="gap-3">
           <CardHeader className="pb-0">
-            <CardTitle className="text-base">Patients served this week</CardTitle>
+            <CardTitle className="text-base">Patients served this week (sample data)</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="h-56">
@@ -195,7 +195,7 @@ export default function FacilityDashboard() {
 
         <Card className="gap-3">
           <CardHeader className="pb-0">
-            <CardTitle className="text-base">Referral completion trend</CardTitle>
+            <CardTitle className="text-base">Referral completion trend (sample data)</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="h-56">

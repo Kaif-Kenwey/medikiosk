@@ -49,7 +49,7 @@ No login walls, no English forms, no paper register — and no AI making autonom
 - **Diagnostic coordination** — order → sample → processing → result → doctor review; results flow into the record
 - **Medicine availability** — facility-level stock visibility with alternative-facility suggestions (visibility only — no ordering)
 - **High-risk follow-up board** — maternal / child / chronic / high-risk / missed categories with contact, reschedule, escalate, complete actions
-- **Offline-first demo** — "Simulate Offline Mode" queues intake and actions locally (localStorage), shows pending-sync state, and replays them with **Sync Now**
+- **Offline-first demo** — "Simulate Offline Mode" queues intake and actions locally (localStorage), shows pending-sync state, and replays them with **Sync Now**; records the server rejects are reported as failed, never silently dropped
 - **Doctor dashboard** — prioritised queue, waiting time, pending reviews, diagnostics awaiting review
 - **Facility dashboard** — patients served, referral completion, follow-up completion %, medicine alerts, red-flag escalation alerts + charts (recharts)
 - **Care network map** — animated referral flow across the facility ladder
@@ -75,6 +75,8 @@ bun run dev          # → http://localhost:3000
 ```
 
 **First run:** open `http://localhost:3000`. The demo dataset (5 patients, visits, referrals, lab history, medicine stock) **seeds automatically on first load** — there is no seed command to run.
+
+**If the facility server is unreachable at load time**, the app retries automatically, falls back to the last dataset cached on the device, and — if nothing is cached — shows an explicit connection screen with a retry button. A rendering error in any screen shows a recovery card, never a blank page.
 
 **Reset everything:** `Demo Mode → Reset Demo` (or `POST /api/demo/reset`) instantly restores the pristine demo dataset.
 
@@ -178,13 +180,13 @@ Every mutation returns the full refreshed dataset (`{ok, data}`) so the UI is al
 | `/api/ai/triage` | POST | `{ symptoms[], durationDays?, severity?, age, conditions[] }` |
 | `/api/intake` | POST | `{ name, age, gender, phone, chiefComplaint, symptoms[], durationDays?, severity?, conditions[], allergies[], medications[], clientRef? }` |
 | `/api/documents` | POST | `{ patientId, type, label? }` |
-| `/api/documents/validate` | POST | `{ id, action: VALIDATE \| REJECT, by? }` |
-| `/api/referrals` | POST / PATCH | POST: `{ patientId, … }` · PATCH: `{ id, status, actor? }` |
-| `/api/diagnostics` | POST / PATCH | POST: `{ patientId, testType, orderedBy? }` · PATCH: `{ id, status }` |
+| `/api/documents/validate` | POST | `{ id, action: ACCEPT (or VALIDATE) \| REJECT, editedExtracted?, validatedBy? }` — one-time validation (409 on re-validation) |
+| `/api/referrals` | POST / PATCH | POST: `{ patientId, reason, destination, priority?, origin? }` · PATCH: `{ id, status, by?, note? }` — terminal states locked |
+| `/api/diagnostics` | POST / PATCH | POST: `{ patientId, testType, orderedBy? }` · PATCH: `{ id, status }` — REVIEWED requires a result |
 | `/api/followups` | PATCH | `{ id, status, by?, notes?, nextDue? }` |
 | `/api/visits` | PATCH | `{ id, status, … }` |
 | `/api/demo/reset` | POST | — |
-| `/api/fhir` | GET | `?patientId=…` → FHIR R4 Bundle |
+| `/api/fhir` | GET | `?patientId=…` → FHIR R4 document Bundle (Composition + resources) |
 
 ## Technology Stack
 

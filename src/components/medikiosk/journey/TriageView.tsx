@@ -173,7 +173,7 @@ export default function TriageView() {
           className="mt-4 flex items-center gap-1.5 text-sm font-medium text-teal-700 hover:underline"
         >
           <FileText className="h-4 w-4" aria-hidden />
-          {showTranscript ? "Hide original transcript" : "View original transcript"}
+          {showTranscript ? "Hide recorded complaint" : "View recorded complaint (as captured)"}
         </button>
         {showTranscript && (
           <p className="mt-2 rounded-lg bg-muted/60 p-3 text-sm italic text-muted-foreground">
