@@ -10,6 +10,7 @@ const D = (s: string) => new Date(s) // helper for readability
 
 export async function seedDemoData() {
   // Wipe all collections (demo reset)
+  await db.consentRecord.deleteMany()
   await db.auditEvent.deleteMany()
   await db.documentRecord.deleteMany()
   await db.followUp.deleteMany()
