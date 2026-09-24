@@ -111,13 +111,18 @@ export interface ReplayResult {
   remaining: number
   /** Labels of records the server rejected */
   failedLabels: string[]
+  /** True when replay stopped because the session lacks a required role */
+  authBlocked: boolean
 }
 
 /**
  * Replay the offline queue in order.
  * - success (2xx + ok:true): remove, count as synced
- * - definitive rejection (non-network, 4xx/5xx): remove, count as failed
- *   (the record is kept visible in the failure list — never silently lost)
+ * - auth failure (401/403) or server error (5xx): KEEP the record queued,
+ *   stop replaying, and tell the caller (authBlocked) — patient data is
+ *   never dropped because of a sign-in or server hiccup
+ * - definitive rejection (other 4xx): remove, count as failed, surface the
+ *   label so the operator can re-enter the record correctly
  * - network error: stop, put the remaining records back in the queue
  */
 export async function replayQueue(): Promise<ReplayResult> {
@@ -126,6 +131,7 @@ export async function replayQueue(): Promise<ReplayResult> {
   const failedLabels: string[] = []
   let synced = 0
   let failed = 0
+  let authBlocked = false
 
   while (pending.length > 0) {
     const item = pending[0]
@@ -142,13 +148,28 @@ export async function replayQueue(): Promise<ReplayResult> {
       } catch {
         // non-JSON body — fall back to HTTP status
       }
-      pending.shift()
       if (ok) {
+        pending.shift()
         synced += 1
-      } else {
-        failed += 1
-        failedLabels.push(item.label)
+        continue
       }
+      if (res.status === 401 || res.status === 403) {
+        // Auth problem — the record represents a real patient encounter, so
+        // it is NEVER dropped. Keep it queued and ask for the right role.
+        authBlocked = true
+        failedLabels.push(item.label)
+        break
+      }
+      if (res.status >= 500) {
+        // Server hiccup — transient. Keep the record for the next sync.
+        failedLabels.push(item.label)
+        break
+      }
+      // Other 4xx — permanent rejection (validation/conflict). Drop and
+      // report so the operator can re-enter the record correctly.
+      pending.shift()
+      failed += 1
+      failedLabels.push(item.label)
     } catch {
       // Network failure — stop and re-queue the remainder (incl. current item)
       break
@@ -156,5 +177,5 @@ export async function replayQueue(): Promise<ReplayResult> {
   }
 
   if (pending.length > 0) saveQueue([...pending, ...getQueue()])
-  return { synced, failed, remaining: pending.length, failedLabels }
+  return { synced, failed, remaining: pending.length, failedLabels, authBlocked }
 }

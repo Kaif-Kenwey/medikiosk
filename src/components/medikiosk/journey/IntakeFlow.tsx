@@ -23,8 +23,10 @@ import {
   Loader2,
   Mic,
   Square,
+  Stethoscope,
   User,
   UserCheck,
+  UserCog,
   UserRound,
   Users,
   WifiOff,
@@ -107,7 +109,7 @@ interface InterviewQ {
 // Main component
 // ------------------------------------------------------------
 export default function IntakeFlow() {
-  const { data, language, isOffline, navigate, submitIntake } = useAppStore()
+  const { data, language, isOffline, navigate, submitIntake, role, signIn } = useAppStore()
   const t = makeT(language)
 
   const [step, setStep] = useState(1)
@@ -328,10 +330,14 @@ export default function IntakeFlow() {
       ...new Set([...selectedSymptoms.map((s) => s.label), ...extraRedFlags]),
     ]
     try {
+      // Abort after 6s so an offline/unreachable server can never leave the
+      // patient stuck on a disabled "Waiting for your answers…" button —
+      // the interview is optional and skips gracefully when it times out.
       const res = await fetch("/api/ai/interview", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ symptoms, severity, asked: askedIds }),
+        signal: AbortSignal.timeout(6000),
       })
       const json = (await res.json()) as { ok: boolean; data?: { done: boolean; question?: InterviewQ } }
       if (json.ok && json.data && !json.data.done && json.data.question) {
@@ -455,6 +461,43 @@ export default function IntakeFlow() {
   ]
 
   const stepTitles = [t("whatBringsYou"), t("alsoHave"), t("patientDetails"), "Health history (optional)"]
+
+  // Role gate: patient self-service intake is a kiosk/frontline action.
+  // A doctor walking the patient journey would fill every screen and then be
+  // rejected by RBAC at submit — stop that honestly, before any data is typed.
+  if (role === "doctor") {
+    return (
+      <div className="mx-auto w-full max-w-xl">
+        <div className="rounded-xl border border-amber-300 bg-amber-50 p-6 text-center">
+          <UserCog className="mx-auto h-10 w-10 text-amber-700" aria-hidden />
+          <h2 className="mt-3 text-lg font-semibold text-amber-900">
+            You are signed in as {role === "doctor" ? "a doctor" : "staff"}
+          </h2>
+          <p className="mt-2 text-sm leading-relaxed text-amber-800">
+            Patient self-service intake runs on the Kiosk role. Clinical review of intake records
+            happens in the doctor queue — AI assists, a professional decides.
+          </p>
+          <div className="mt-4 flex flex-wrap justify-center gap-2">
+            <Button
+              type="button"
+              className="h-11 bg-teal-600 text-white hover:bg-teal-700"
+              onClick={() => navigate("doctor")}
+            >
+              <Stethoscope className="h-4 w-4" aria-hidden /> Open Doctor Queue
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              className="h-11 border-teal-600 text-teal-700 hover:bg-teal-50"
+              onClick={() => void signIn("kiosk")}
+            >
+              Continue as Kiosk
+            </Button>
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="mx-auto w-full max-w-2xl space-y-5">

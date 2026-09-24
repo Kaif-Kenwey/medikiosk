@@ -7,7 +7,7 @@
 // simulated 108 ambulance). AI flags — humans verify and decide.
 // ============================================================
 
-import { Fragment, useEffect, useMemo, useRef, useState } from "react"
+import { Fragment, useMemo, useRef, useState } from "react"
 import { toast } from "sonner"
 import { AlertTriangle, Ambulance, Check, FileText, Phone, Siren } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
@@ -51,8 +51,7 @@ export default function EmergencyView() {
     useAppStore()
   const t = makeT(language)
 
-  const [stage, setStage] = useState(1)
-  const [stageTimes, setStageTimes] = useState<Record<number, string>>({})
+  const [verifiedHere, setVerifiedHere] = useState(false)
   const [ambulanceOpen, setAmbulanceOpen] = useState(false)
   const busyRef = useRef(false)
 
@@ -64,27 +63,30 @@ export default function EmergencyView() {
     () => (visit && data ? data.patients.find((p) => p.id === visit.patientId) ?? null : null),
     [data, visit]
   )
-  const referralExists = useMemo(
-    () => !!data?.referrals.some((r) => r.visitId === visit?.id),
+  const referral = useMemo(
+    () => data?.referrals.find((r) => r.visitId === visit?.id) ?? null,
     [data, visit]
   )
+  const escalated = useMemo(
+    () =>
+      !!visit &&
+      (visit.status === "ESCALATED" ||
+        visit.status === "IN_CONSULTATION" ||
+        visit.status === "COMPLETED"),
+    [visit]
+  )
 
-  // Derived baseline stage from server-side state (survives re-entry);
-  // local `stage` can only advance beyond it.
-  const baseStage = visit ? (referralExists ? 4 : visit.status === "ESCALATED" ? 3 : 1) : 1
-  const currentStage = Math.max(stage, baseStage)
-
-  // Stage 5 fires automatically 1.5s after the referral exists at stage >= 4.
-  useEffect(() => {
-    if (currentStage === 4 && referralExists) {
-      const timer = window.setTimeout(() => {
-        setStage(5)
-        setStageTimes((prev) => ({ ...prev, 5: new Date().toISOString() }))
-        toast.success("Hospital received — District Hospital OPD notified")
-      }, 1500)
-      return () => window.clearTimeout(timer)
-    }
-  }, [currentStage, referralExists])
+  // The timeline is DERIVED FROM SERVER STATE so it stays truthful across
+  // sessions and devices: a stage lights up only when the record itself
+  // proves it happened. "Hospital Received" requires the facility to have
+  // accepted the referral — never a timer.
+  const doneStage = useMemo(() => {
+    if (!visit) return 0
+    if (referral && referral.status !== "PENDING") return 5
+    if (referral) return 4
+    if (escalated) return 3
+    return verifiedHere ? 2 : 1
+  }, [visit, referral, escalated, verifiedHere])
 
   // Guard: dataset still bootstrapping
   if (!data) return <ViewSkeleton />
@@ -111,37 +113,40 @@ export default function EmergencyView() {
   }
 
   const stageTimeLabel = (n: number) => {
+    if (!visit) return null
     if (n === 1) return formatTime(visit.createdAt)
-    const ts = stageTimes[n]
-    return ts ? formatTime(ts) : null
+    if (n === 2 || n === 3) return escalated ? formatTime(visit.updatedAt) : null
+    if (n === 4) return referral ? formatTime(referral.createdAt) : null
+    if (n === 5) return referral && referral.status !== "PENDING" ? formatTime(referral.updatedAt) : null
+    return null
   }
 
   const onVerify = () => {
-    setStage((s) => Math.max(s, 2))
-    setStageTimes((prev) => ({ ...prev, 2: new Date().toISOString() }))
+    setVerifiedHere(true)
     toast.success(`Evidence verified by ${WORKER}`)
   }
 
   const onEscalate = async () => {
-    if (busyRef.current || currentStage >= 3) return
+    if (busyRef.current || doneStage >= 3) return
     busyRef.current = true
     try {
-      await updateVisit({ id: visit.id, status: "ESCALATED", by: WORKER })
-      setStage((s) => Math.max(s, 3))
-      setStageTimes((prev) => ({ ...prev, 3: new Date().toISOString() }))
-      toast.success("Healthcare professional notified", {
-        description: "Dr. A. Prasad has been alerted for immediate review.",
-      })
+      const ok = await updateVisit({ id: visit.id, status: "ESCALATED", by: WORKER })
+      // Only celebrate when the server actually recorded the escalation.
+      if (ok) {
+        toast.success("Healthcare professional notified", {
+          description: "Dr. A. Prasad has been alerted for immediate review.",
+        })
+      }
     } finally {
       busyRef.current = false
     }
   }
 
   const onStartReferral = async () => {
-    if (busyRef.current || currentStage >= 4) return
+    if (busyRef.current || doneStage >= 4) return
     busyRef.current = true
     try {
-      await createReferral({
+      const ok = await createReferral({
         patientId: visit.patientId,
         visitId: visit.id,
         reason: `Red-flag escalation — ${visit.chiefComplaint}`,
@@ -149,11 +154,11 @@ export default function EmergencyView() {
         priority: "EMERGENCY",
         createdBy: WORKER,
       })
-      setStage((s) => Math.max(s, 4))
-      setStageTimes((prev) => ({ ...prev, 4: new Date().toISOString() }))
-      toast.success("Referral initiated", {
-        description: `${DESTINATION} — EMERGENCY priority.`,
-      })
+      if (ok) {
+        toast.success("Referral initiated", {
+          description: `${DESTINATION} — EMERGENCY priority. Timeline completes when the facility accepts.`,
+        })
+      }
     } finally {
       busyRef.current = false
     }
@@ -297,8 +302,8 @@ export default function EmergencyView() {
           <div className="flex min-w-[540px] items-start">
             {STAGES.map((s, i) => {
               const n = i + 1
-              const completed = n < currentStage || n === 1 || (n === 5 && currentStage === 5)
-              const current = n === currentStage && n > 1
+              const completed = n <= doneStage
+              const current = n === doneStage + 1
               const time = stageTimeLabel(n)
               return (
                 <Fragment key={s.key}>
@@ -323,7 +328,7 @@ export default function EmergencyView() {
                       {s.label}
                     </p>
                     {time ? <p className="text-[10px] text-muted-foreground">{time}</p> : null}
-                    {s.key === "received" && currentStage === 5 && (
+                    {s.key === "received" && doneStage === 5 && (
                       <p className="text-[10px] font-medium text-teal-700">
                         District Hospital OPD notified
                       </p>
@@ -334,7 +339,7 @@ export default function EmergencyView() {
                       aria-hidden
                       className={cn(
                         "mt-[18px] h-0.5 flex-1 rounded",
-                        currentStage >= n + 1 ? "bg-teal-600" : "bg-gray-200"
+                        doneStage >= n + 1 ? "bg-teal-600" : "bg-gray-200"
                       )}
                     />
                   )}
@@ -344,7 +349,7 @@ export default function EmergencyView() {
           </div>
         </div>
 
-        {currentStage === 1 ? (
+        {doneStage < 2 ? (
           <div className="mt-4">
             <Button
               type="button"
@@ -357,7 +362,11 @@ export default function EmergencyView() {
         ) : (
           <p className="mt-4 flex items-center gap-1.5 text-sm font-medium text-teal-700">
             <Check className="h-4 w-4" aria-hidden /> Verified by {WORKER}
-            {stageTimes[2] ? ` at ${formatTime(stageTimes[2])}` : ""}
+            {escalated
+              ? ` at ${formatTime(visit.updatedAt)}`
+              : verifiedHere
+                ? " (confirmed in this session)"
+                : ""}
           </p>
         )}
       </section>
@@ -371,7 +380,7 @@ export default function EmergencyView() {
         <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
           <Button
             className="h-14 bg-red-600 text-base font-semibold text-white hover:bg-red-700"
-            disabled={currentStage >= 3}
+            disabled={doneStage >= 3}
             onClick={() => void onEscalate()}
           >
             <Siren className="h-5 w-5" aria-hidden /> {t("escalateToDoctor")}
@@ -379,7 +388,7 @@ export default function EmergencyView() {
           <Button
             variant="outline"
             className="h-14 border-teal-600 text-base font-semibold text-teal-700 hover:bg-teal-50"
-            disabled={currentStage >= 4}
+            disabled={doneStage >= 4}
             onClick={() => void onStartReferral()}
           >
             <Ambulance className="h-5 w-5" aria-hidden /> {t("startReferral")}

@@ -42,7 +42,7 @@ No login walls, no English forms, no paper register — and no AI making autonom
 - **Kiosk mode** — large touch targets, English / हिन्दी / বাংলা, audio guidance, text-size control, high-contrast mode
 - **Voice intake simulation** — listening UI → Hindi/English/Bengali transcript → AI extraction of symptoms, duration and red-flag suspects; the patient confirms before anything is saved
 - **AI-assisted triage** — deterministic clinical rules engine flags emergencies; output is always labelled *"AI-assisted risk flag — requires human review"*; AI never diagnoses
-- **Red-flag emergency flow** — full escalation timeline (Detected → Verified → Healthcare Worker Notified → Referral Initiated → Hospital Received) with auto-created referral and auto-created 48h high-risk follow-up
+- **Red-flag emergency flow** — full escalation timeline (Detected → Verified → Healthcare Worker Notified → Referral Initiated → Hospital Received) with auto-created referral and auto-created 48h high-risk follow-up; every stage is derived from the server record (Hospital Received = facility accepted)
 - **Document intelligence** — scan prescription/lab report/prior record; OCR simulation extracts fields with confidence + source; nothing enters the record until a human validates it
 - **Longitudinal patient record** — visits, symptoms, AI summaries, validated labs, medications, documents, referrals, follow-ups, clinical notes + **FHIR R4 export** (ABDM-aligned abstraction)
 - **Referral management** — facility ladder with live status tracker (Pending → Accepted → In Transit → Arrived → Consultation → Completed) and full history log
@@ -105,7 +105,7 @@ No login required: switch roles from the header menu (a demo feature).
 2. Tap the **mic** — "listening" → Hindi transcript types out → AI extracts **Fever + Difficulty breathing, 3 days**
 3. Confirm → adaptive red-flag checklist → **AI asks adaptive follow-up questions** (patient answers Yes/No) → **Demo: Sita Devi** demo-fill → *Known patient matched — previous visits found* (continuity!)
 4. **Consent checkbox** (DPDP-style) → submit → **AI triage: HIGH** — red flag, 93% confidence → **Escalate**
-5. **Emergency console** — Verify Evidence → Escalate to Doctor → Start Referral → escalation timeline completes
+5. **Emergency console** — Verify Evidence → Escalate to Doctor → Start Referral → timeline advances 1→4; **Hospital Received lights up when the doctor accepts the referral** (step 6) — every stage is read from the server record, never faked
 6. **Doctor dashboard** — case in queue → Review → longitudinal record shows Aug lab (Hb 10.2), June hospital visit → generate the **AI clinical summary** + see the **consent register**
 7. **Document intelligence** — scan CBC report (or upload a real photo → vision OCR) → fields extracted → **Human validation** with **AI consistency check** → confirm → record updated
 8. **Diagnostics** — CBC ordered → result attached → reviewed into record

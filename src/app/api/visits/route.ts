@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { db } from "@/lib/db"
 import { logAudit, mapVisit, getDemoData, demoNow } from "@/lib/server-data"
-import { guard } from "@/lib/auth"
+import { guard, getSessionFromRequest } from "@/lib/auth"
 
 export const dynamic = "force-dynamic"
 
@@ -10,7 +10,39 @@ const VALID_STATUSES = ["WAITING", "TRIAGED", "ESCALATED", "IN_CONSULTATION", "C
 /** PATCH — update visit (escalate, start consultation, validate, complete) */
 export async function PATCH(req: NextRequest) {
   const denied = guard(req, "PATCH")
-  if (denied) return denied
+  // Kiosk exception: the patient-facing device may ONLY raise the red-flag
+  // escalation ("AI assists → professionals decide" — escalation is the one
+  // transition the safety flow requires the kiosk to trigger). Everything
+  // else (validation, clinical notes, consultation states) stays staff-only.
+  if (denied) {
+    const session = getSessionFromRequest(req)
+    if (!session || session.sub !== "kiosk") return denied
+    const probe = (await req.json().catch(() => ({}))) as {
+      status?: string
+      validatedBy?: string
+      clinicalNote?: string
+    }
+    const kioskAllowed =
+      probe.status === "ESCALATED" && !probe.validatedBy && !probe.clinicalNote
+    if (!kioskAllowed) {
+      return NextResponse.json(
+        { ok: false, error: "AUTH_FORBIDDEN — kiosk role may only escalate a visit (status ESCALATED)" },
+        { status: 403 }
+      )
+    }
+    // Re-wrap the consumed body for the handler below (flagged as kiosk so
+    // the audit trail records the device, not a simulated worker).
+    const replay = new NextRequest(req.url, {
+      method: "PATCH",
+      headers: req.headers,
+      body: JSON.stringify({ ...probe, _kiosk: true }),
+    })
+    return patchStaff(replay)
+  }
+  return patchStaff(req)
+}
+
+async function patchStaff(req: NextRequest) {
   try {
     const body = (await req.json()) as {
       id?: string
@@ -18,6 +50,7 @@ export async function PATCH(req: NextRequest) {
       validatedBy?: string
       clinicalNote?: string
       by?: string
+      _kiosk?: boolean
     }
     if (!body.id || (body.status && !VALID_STATUSES.includes(body.status))) {
       return NextResponse.json({ ok: false, error: "Valid id (and status) required" }, { status: 400 })
@@ -32,14 +65,19 @@ export async function PATCH(req: NextRequest) {
         ...(body.status ? { status: body.status } : {}),
         ...(body.validatedBy ? { validatedBy: body.validatedBy } : {}),
         ...(body.clinicalNote !== undefined ? { clinicalNote: body.clinicalNote } : {}),
+        // Keep updatedAt on the demo clock so every timeline in the UI reads
+        // one coherent time source (createdAt is also demoNow-seeded).
+        updatedAt: demoNow(),
       },
     })
     await logAudit({
-      actor: body.by ?? body.validatedBy ?? "Doctor",
+      actor: body._kiosk ? "Kiosk Device" : body.by ?? body.validatedBy ?? "Doctor",
       // Role reflects WHO performed it: a Dr. escalation/validation is a
-      // doctor action; frontline validation keeps FRONTLINE.
-      actorRole:
-        body.by?.startsWith("Dr.") || body.validatedBy?.startsWith("Dr.")
+      // doctor action; frontline validation keeps FRONTLINE; kiosk emergency
+      // escalation records the device honestly.
+      actorRole: body._kiosk
+        ? "PATIENT_KIOSK"
+        : body.by?.startsWith("Dr.") || body.validatedBy?.startsWith("Dr.")
           ? "DOCTOR"
           : "FRONTLINE",
       action: body.status ? `VISIT_${body.status}` : "VISIT_UPDATED",

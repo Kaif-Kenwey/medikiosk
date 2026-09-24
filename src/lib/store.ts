@@ -145,7 +145,7 @@ interface AppState {
     validatedBy?: string
     clinicalNote?: string
     by?: string
-  }) => Promise<void>
+  }) => Promise<boolean>
   createReferral: (args: {
     patientId: string
     visitId?: string | null
@@ -154,7 +154,7 @@ interface AppState {
     destination: string
     priority: "ROUTINE" | "URGENT" | "EMERGENCY"
     createdBy?: string
-  }) => Promise<void>
+  }) => Promise<boolean>
   updateReferralStatus: (args: {
     id: string
     status: string
@@ -254,7 +254,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (stalePatient || staleVisit) {
         set({ activePatientId: null, activeVisitId: null, lastTriage: null })
       }
-      if (result.synced > 0 && result.failed === 0) {
+      if (result.authBlocked) {
+        toast.error("Sign-in needed before these records can sync", {
+          description: `${result.remaining} offline record${result.remaining === 1 ? " is" : "s are"} safe on this device. Sign in with a role allowed to create ${result.failedLabels[0] ? result.failedLabels[0].toLowerCase() : "this record"} — e.g. Kiosk or Frontline — and sync again.`,
+        })
+      } else if (result.synced > 0 && result.failed === 0) {
         toast.success(`✓ ${result.synced} record${result.synced === 1 ? "" : "s"} synchronized`, {
           description: "Offline-captured data is now on the facility server.",
         })
@@ -591,12 +595,14 @@ export const useAppStore = create<AppState>((set, get) => ({
           })
         }
         toast.info("📴 Change saved offline — pending sync")
-        return
+        return true
       }
       set({ data: res!.data })
       toast.success(status === "COMPLETED" ? "Consultation completed" : "Visit updated")
+      return true
     } catch (e) {
       toast.error("Update failed", { description: e instanceof Error ? e.message : undefined })
+      return false
     }
   },
 
@@ -611,7 +617,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (queued) {
         toast.info("📴 Referral saved offline — pending sync")
         await get().bootstrap().catch(() => {})
-        return
+        return true
       }
       set({ data: res!.data })
       const ref = (res!.meta as { referral: Referral }).referral
@@ -619,8 +625,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       toast.success(`Referral created → ${args.destination}`, {
         description: `${args.priority} priority — facility has been notified.`,
       })
+      return true
     } catch (e) {
       toast.error("Referral failed", { description: e instanceof Error ? e.message : undefined })
+      return false
     }
   },
 
