@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { db } from "@/lib/db"
 import { logAudit, mapReferral, getDemoData, demoNow } from "@/lib/server-data"
+import { guard } from "@/lib/auth"
 import type { ReferralHistoryEntry } from "@/lib/types"
 
 export const dynamic = "force-dynamic"
@@ -9,9 +10,14 @@ const VALID_STATUSES = [
   "PENDING", "ACCEPTED", "IN_TRANSIT", "ARRIVED",
   "IN_CONSULTATION", "COMPLETED", "CANCELLED",
 ]
+const VALID_PRIORITIES = ["ROUTINE", "URGENT", "EMERGENCY"]
+/** Terminal states — the journey is closed; history stays coherent */
+const TERMINAL_STATUSES = ["COMPLETED", "CANCELLED"]
 
 /** POST — create referral; PATCH — update referral status (facility workflow) */
 export async function POST(req: NextRequest) {
+  const denied = guard(req, "POST")
+  if (denied) return denied
   try {
     const body = (await req.json()) as {
       patientId?: string
@@ -27,6 +33,22 @@ export async function POST(req: NextRequest) {
     if (!body.patientId || !body.reason || !body.destination) {
       return NextResponse.json(
         { ok: false, error: "patientId, reason, destination required" },
+        { status: 400 }
+      )
+    }
+    if (body.priority && !VALID_PRIORITIES.includes(body.priority)) {
+      return NextResponse.json(
+        { ok: false, error: "priority must be ROUTINE, URGENT or EMERGENCY" },
+        { status: 400 }
+      )
+    }
+    const patient = await db.patient.findUnique({ where: { id: body.patientId } })
+    if (!patient) {
+      return NextResponse.json({ ok: false, error: "Patient not found" }, { status: 404 })
+    }
+    if (body.origin && body.origin === body.destination) {
+      return NextResponse.json(
+        { ok: false, error: "Origin and destination must differ" },
         { status: 400 }
       )
     }
@@ -51,7 +73,7 @@ export async function POST(req: NextRequest) {
       actor: body.createdBy ?? "ANM Sunita Sharma",
       actorRole: "FRONTLINE",
       action: "REFERRAL_CREATED",
-      target: `${referral.id.slice(-8)} ${body.reason}`,
+      target: `${patient.mrn} ${patient.name} — ${referral.id.slice(-8)}`,
       detail: `${referral.origin} → ${referral.destination} (${referral.priority})`,
       createdAt: demoNow(),
     })
@@ -66,6 +88,8 @@ export async function POST(req: NextRequest) {
 }
 
 export async function PATCH(req: NextRequest) {
+  const denied = guard(req, "PATCH")
+  if (denied) return denied
   try {
     const body = (await req.json()) as {
       id?: string
@@ -81,6 +105,12 @@ export async function PATCH(req: NextRequest) {
     const existing = await db.referral.findUnique({ where: { id: body.id } })
     if (!existing) {
       return NextResponse.json({ ok: false, error: "Referral not found" }, { status: 404 })
+    }
+    if (TERMINAL_STATUSES.includes(existing.status)) {
+      return NextResponse.json(
+        { ok: false, error: `Referral is already ${existing.status.toLowerCase()} — status can no longer change` },
+        { status: 409 }
+      )
     }
     const history = [
       ...JSON.parse(existing.history),
@@ -101,8 +131,8 @@ export async function PATCH(req: NextRequest) {
       actor: body.by ?? "Facility",
       actorRole: body.by?.startsWith("Dr.") ? "DOCTOR" : "FRONTLINE",
       action: `REFERRAL_${body.status}`,
-      target: `${referral.id.slice(-8)} ${existing.reason}`,
-      detail: `${existing.origin} → ${existing.destination}`,
+      target: `${existing.origin} → ${existing.destination} — ${referral.id.slice(-8)}`,
+      detail: body.note ?? `${existing.status} → ${body.status}`,
       createdAt: demoNow(),
     })
     const data = await getDemoData()

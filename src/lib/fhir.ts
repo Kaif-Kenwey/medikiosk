@@ -34,16 +34,56 @@ export function buildFhirBundle(patient: Patient, data: DemoData) {
   const pid = `patient/${patient.id}`
   const entries: { fullUrl?: string; resource: Record<string, unknown> }[] = []
 
+  // ---- Composition (required first entry for Bundle.type = "document") ----
+  entries.push({
+    fullUrl: `composition/${patient.id}`,
+    resource: {
+      resourceType: "Composition",
+      id: `comp-${patient.id}`,
+      status: "final",
+      type: { text: "Patient record extract (demo abstraction)" },
+      title: `MediKiosk record — ${patient.name} (${patient.mrn})`,
+      date: new Date().toISOString(),
+      // ABDM-aligned demo subject/custodian — not a registered HIP
+      subject: { reference: pid, display: patient.name },
+      author: [{ display: "MediKiosk (SIH26133 prototype)" }],
+      custodian: { display: "MediKiosk demo facility network" },
+      section: [
+        {
+          title: "Encounters, observations, medications, requests and documents",
+          code: { text: "Continuity of care record" },
+          text: {
+            status: "generated",
+            div: '<div xmlns="http://www.w3.org/1999/xhtml">Demo export — ABDM-aligned abstraction, not a live integration.</div>',
+          },
+        },
+      ],
+    },
+  })
+
   // ---- Patient ----
+  const patientIdentifiers: Record<string, unknown>[] = [
+    { system: "https://medikiosk.demo/mrn", value: patient.mrn },
+  ]
+  // ABHA address — real value when linked, demo fallback derived from the phone
+  if (patient.abhaId) {
+    patientIdentifiers.push({
+      system: "https://healthid.abdm.gov.in/abha-address",
+      value: patient.abhaId,
+      type: { text: "ABHA address (ABDM)" },
+    })
+  } else {
+    patientIdentifiers.push({
+      system: "https://healthid.abdm.gov.in",
+      value: `demo-${patient.phone.replace(/\s/g, "")}@abdm`,
+    })
+  }
   entries.push({
     fullUrl: pid,
     resource: {
       resourceType: "Patient",
       id: patient.id,
-      identifier: [
-        { system: "https://medikiosk.demo/mrn", value: patient.mrn },
-        { system: "https://healthid.abdm.gov.in", value: `demo-${patient.phone.replace(/\s/g, "")}@abdm` },
-      ],
+      identifier: patientIdentifiers,
       name: [{ text: patient.name }],
       gender: patient.gender.toLowerCase(),
       birthDate: String(2026 - patient.age),
@@ -89,6 +129,13 @@ export function buildFhirBundle(patient: Patient, data: DemoData) {
   for (const d of data.documents.filter((x) => x.patientId === patient.id && x.validationStatus === "VALIDATED")) {
     for (const f of d.extracted) {
       if (f.flag === "info") continue
+      // Numeric values → valueQuantity; composite/non-numeric values
+      // (e.g. BP "138/88") → valueString so no data is silently dropped
+      const numeric = f.value.includes("/") ? NaN : Number(f.value.replace(/,/g, ""))
+      const valueQuantity =
+        Number.isFinite(numeric)
+          ? { value: numeric, unit: f.unit ?? "" }
+          : undefined
       entries.push({
         resource: {
           resourceType: "Observation",
@@ -98,7 +145,7 @@ export function buildFhirBundle(patient: Patient, data: DemoData) {
           code: { text: f.field },
           subject: { reference: pid },
           effectiveDateTime: d.createdAt,
-          valueQuantity: { value: parseFloat(f.value) || f.value, unit: f.unit ?? "" },
+          ...(valueQuantity ? { valueQuantity } : { valueString: f.value + (f.unit ? ` ${f.unit}` : "") }),
           note: [{ text: `Human-validated from ${f.source}` }],
         },
       })

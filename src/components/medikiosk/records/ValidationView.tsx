@@ -6,17 +6,20 @@
 // until a healthcare professional confirms or rejects it.
 // ============================================================
 
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import type { LucideIcon } from "lucide-react"
 import {
+  AlertTriangle,
   Check,
   CheckCircle2,
   ClipboardCheck,
   FileText,
   FlaskConical,
+  Info,
   Loader2,
   Pill,
   ScanSearch,
+  ShieldAlert,
   ShieldCheck,
   User,
   WifiOff,
@@ -35,6 +38,7 @@ import { EmptyState, SectionTitle, SourceChip } from "@/components/medikiosk/sha
 import { formatDate, formatTime } from "@/lib/format"
 import { useAppStore } from "@/lib/store"
 import { cn } from "@/lib/utils"
+import type { ConsistencyFinding } from "@/lib/ai-engine"
 import type { DocumentRecord, ExtractedField } from "@/lib/types"
 
 // ---------- local constants & helpers ----------
@@ -91,6 +95,9 @@ export default function ValidationView() {
   const [edits, setEdits] = useState<Record<string, ExtractedField[]>>({})
   const [rejectId, setRejectId] = useState<string | null>(null)
   const [busyId, setBusyId] = useState<string | null>(null)
+  // AI consistency checks: docId → findings | null (checked)
+  const [consistency, setConsistency] = useState<Record<string, ConsistencyFinding[] | null>>({})
+  const [checkingId, setCheckingId] = useState<string | null>(null)
 
   const validatorName = role === "doctor" ? "Dr. A. Prasad" : role === "admin" ? "Records Admin" : "ANM Sunita Sharma"
 
@@ -173,6 +180,40 @@ export default function ValidationView() {
       return next
     })
   }
+
+  async function runConsistency(doc: DocumentRecord) {
+    if (checkingId) return
+    setCheckingId(doc.id)
+    try {
+      const res = await fetch("/api/ai/consistency", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ patientId: doc.patientId, documentId: doc.id }),
+      })
+      const json = (await res.json()) as { ok: boolean; error?: string; data?: { findings: ConsistencyFinding[] } }
+      if (json.ok && json.data) {
+        setConsistency((prev) => ({ ...prev, [doc.id]: json.data!.findings }))
+      } else {
+        toast.error("Consistency check failed", { description: json.error ?? "Try again" })
+      }
+    } catch {
+      toast.error("Consistency check failed", {
+        description: isOffline ? "The AI service needs a connection." : "Could not reach the AI service.",
+      })
+    } finally {
+      setCheckingId(null)
+    }
+  }
+
+  // Auto-run the consistency check for the freshly scanned document
+  const pendingForAuto = useMemo(() => data?.documents ?? [], [data])
+  useEffect(() => {
+    if (!activeDocumentId) return
+    const doc = pendingForAuto.find((d) => d.id === activeDocumentId)
+    if (doc && consistency[doc.id] === undefined && checkingId === null) {
+      void runConsistency(doc)
+    }
+  }, [activeDocumentId, pendingForAuto])
 
   if (!data) {
     return (
@@ -318,6 +359,69 @@ export default function ValidationView() {
                       OCR text is raw machine output — treat it as evidence, not as verified clinical data.
                     </p>
                   </div>
+                </div>
+
+                {/* AI consistency panel */}
+                <div className="mt-4 rounded-lg border border-teal-200 bg-teal-50/40 p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-teal-800">
+                      <ScanSearch className="h-3.5 w-3.5" /> AI consistency check
+                    </p>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-8 border-teal-300 text-teal-800 hover:bg-teal-100"
+                      disabled={checkingId === doc.id}
+                      onClick={() => void runConsistency(doc)}
+                    >
+                      {checkingId === doc.id ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <ShieldAlert className="h-3.5 w-3.5" />
+                      )}
+                      {consistency[doc.id] === undefined ? "Run check" : "Re-run check"}
+                    </Button>
+                  </div>
+                  {consistency[doc.id] !== undefined && consistency[doc.id] !== null && (
+                    <div className="mt-2 space-y-2">
+                      {(consistency[doc.id] ?? []).length === 0 ? (
+                        <p className="flex items-center gap-1.5 text-sm text-emerald-800">
+                          <CheckCircle2 className="h-4 w-4 shrink-0" /> No contradictions found between the document,
+                          the stated symptoms and the patient record.
+                        </p>
+                      ) : (
+                        (consistency[doc.id] ?? []).map((f) => (
+                          <div
+                            key={f.id}
+                            className={cn(
+                              "rounded-md border p-2.5 text-sm",
+                              f.severity === "CRITICAL"
+                                ? "border-red-300 bg-red-50 text-red-900"
+                                : f.severity === "WARNING"
+                                  ? "border-amber-300 bg-amber-50 text-amber-900"
+                                  : "border-gray-200 bg-white text-gray-700"
+                            )}
+                          >
+                            <p className="flex items-center gap-1.5 font-semibold">
+                              {f.severity === "CRITICAL" ? (
+                                <XCircle className="h-4 w-4 shrink-0" />
+                              ) : f.severity === "WARNING" ? (
+                                <AlertTriangle className="h-4 w-4 shrink-0" />
+                              ) : (
+                                <Info className="h-4 w-4 shrink-0" />
+                              )}
+                              {f.severity} — {f.title}
+                            </p>
+                            <p className="mt-1">{f.detail}</p>
+                            <p className="mt-1 text-xs opacity-75">Sources: {f.sources.join(" · ")}</p>
+                          </div>
+                        ))
+                      )}
+                      <p className="text-[11px] text-muted-foreground">
+                        Findings are advisory — resolution is always a human decision.
+                      </p>
+                    </div>
+                  )}
                 </div>
 
                 {/* footer actions */}

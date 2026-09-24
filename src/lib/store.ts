@@ -3,7 +3,7 @@
 // ============================================================
 // MediKiosk — Client state (Zustand)
 // One store for UI navigation, accessibility prefs, offline mode,
-// demo dataset and domain mutations (optimistic when offline).
+// JWT session, demo dataset and domain mutations (optimistic when offline).
 // ============================================================
 
 import { create } from "zustand"
@@ -18,6 +18,31 @@ import type {
   TriageResult,
   View,
 } from "@/lib/types"
+
+/** Last-good dataset cache — backs the "cached demo data" promise when the
+ *  facility server is unreachable at load time (prevents blank screens). */
+const CACHE_KEY = "medikiosk.last-good-data.v1"
+
+function readCache(): DemoData | null {
+  if (typeof window === "undefined") return null
+  try {
+    const raw = sessionStorage.getItem(CACHE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as DemoData
+    return parsed && Array.isArray(parsed.patients) ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+function writeCache(d: DemoData) {
+  if (typeof window === "undefined") return
+  try {
+    sessionStorage.setItem(CACHE_KEY, JSON.stringify(d))
+  } catch {
+    // storage full/unavailable — cache is best-effort
+  }
+}
 
 type TextScale = "normal" | "large" | "xl"
 
@@ -39,6 +64,9 @@ interface IntakeForm {
   medications: string[]
   allergies: string[]
   transcript?: string
+  consent: boolean
+  interviewAnswers?: { question: string; answer: string; at: string }[]
+  abhaId?: string
 }
 
 export interface IntakeOutcome {
@@ -48,11 +76,24 @@ export interface IntakeOutcome {
   returningPatient: boolean
 }
 
+/** Client view of the JWT session (httpOnly cookie holds the token itself) */
+export interface ClientSession {
+  role: Role
+  name: string
+  facility?: string | null
+  expiresAt?: string
+}
+
 interface AppState {
   hydrated: boolean
   loading: boolean
+  /** True when bootstrap failed AND no cached dataset is available */
+  bootstrapError: boolean
   view: View
   role: Role
+  session: ClientSession | null
+  authDialogOpen: boolean
+  authDialogPreset: Role | null
   language: Language
   textScale: TextScale
   highContrast: boolean
@@ -79,6 +120,14 @@ interface AppState {
   syncNow: () => Promise<void>
   setData: (d: DemoData) => void
   bootstrap: () => Promise<void>
+  retryBootstrap: () => Promise<void>
+  /** Auto-authenticate the kiosk device (KIOSK role) if no session exists */
+  ensureSession: () => Promise<void>
+  openAuthDialog: (preset?: Role | null) => void
+  closeAuthDialog: () => void
+  /** Sign in with a facility identity. Returns true on success. */
+  signIn: (role: Role, pin?: string) => Promise<boolean>
+  signOut: () => Promise<void>
   resetDemo: () => Promise<void>
   setActivePatient: (patientId: string | null, visitId?: string | null) => void
   setActiveReferral: (id: string | null) => void
@@ -130,6 +179,7 @@ interface AppState {
     patientId: string
     kind: "LAB_REPORT" | "PRESCRIPTION" | "MEDICAL_RECORD"
     fileName?: string
+    imageDataUrl?: string
   }) => Promise<DocumentRecord | null>
   validateDocument: (args: {
     id: string
@@ -142,8 +192,12 @@ interface AppState {
 export const useAppStore = create<AppState>((set, get) => ({
   hydrated: false,
   loading: true,
+  bootstrapError: false,
   view: "kiosk",
   role: "kiosk",
+  session: null,
+  authDialogOpen: false,
+  authDialogPreset: null,
   language: "en",
   textScale: "normal",
   highContrast: false,
@@ -178,6 +232,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   syncNow: async () => {
+    if (get().syncing) return // double-tap guard — never replay the same record twice
     const q = getQueue()
     if (!q.length) {
       toast.info("Nothing to sync", { description: "No pending offline records." })
@@ -185,13 +240,35 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
     set({ syncing: true })
     try {
-      const synced = await replayQueue()
+      const result = await replayQueue()
       await get().bootstrap()
-      toast.success(`✓ ${synced} record${synced === 1 ? "" : "s"} synchronized`, {
-        description: "Offline-captured data is now on the facility server.",
-      })
+      // Reconcile active selections: offline captures used local temp ids
+      // that no longer exist once the server dataset replaces them.
+      const d = get().data
+      const stalePatient = get().activePatientId
+        ? !d?.patients.some((p) => p.id === get().activePatientId)
+        : false
+      const staleVisit = get().activeVisitId
+        ? !d?.visits.some((v) => v.id === get().activeVisitId)
+        : false
+      if (stalePatient || staleVisit) {
+        set({ activePatientId: null, activeVisitId: null, lastTriage: null })
+      }
+      if (result.synced > 0 && result.failed === 0) {
+        toast.success(`✓ ${result.synced} record${result.synced === 1 ? "" : "s"} synchronized`, {
+          description: "Offline-captured data is now on the facility server.",
+        })
+      } else if (result.synced > 0 && result.failed > 0) {
+        toast.warning(`✓ ${result.synced} synced · ${result.failed} could not be accepted`, {
+          description: `${result.failedLabels.slice(0, 2).join(", ")}${result.failedLabels.length > 2 ? "…" : ""} — the server rejected ${result.failed === 1 ? "it" : "them"}. Nothing was lost; review the records.`,
+        })
+      } else if (result.failed > 0 && result.remaining === 0) {
+        toast.error(`${result.failed} record${result.failed === 1 ? "" : "s"} not accepted by the server`, {
+          description: `${result.failedLabels.slice(0, 2).join(", ")}${result.failedLabels.length > 2 ? "…" : ""} — please re-enter or correct ${result.failed === 1 ? "it" : "them"}.`,
+        })
+      }
     } catch {
-      toast.error("Sync failed", { description: "Will retry on next sync attempt." })
+      toast.error("Sync failed", { description: "Records stay safely queued. Will retry on next sync attempt." })
     } finally {
       set({ syncing: false })
     }
@@ -200,17 +277,102 @@ export const useAppStore = create<AppState>((set, get) => ({
   setData: (d) => set({ data: d, loading: false }),
 
   bootstrap: async () => {
-    try {
-      const res = await fetch("/api/bootstrap", { cache: "no-store" })
-      const json = await res.json()
-      if (json.ok) set({ data: json.data as DemoData, loading: false, hydrated: true })
-      else set({ loading: false, hydrated: true })
-    } catch {
-      set({ loading: false, hydrated: true })
-      toast.error("Could not reach facility server", {
-        description: "Showing cached demo data. Offline features remain available.",
-      })
+    // Try the server up to 3 times (transient hiccups happen right after a
+    // server restart). Never leave the UI rendering views with no dataset.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const res = await fetch("/api/bootstrap", { cache: "no-store" })
+        const json = await res.json()
+        if (json.ok && json.data) {
+          const d = json.data as DemoData
+          writeCache(d)
+          set({ data: d, loading: false, hydrated: true, bootstrapError: false })
+          return
+        }
+      } catch {
+        // network error — retry below
+      }
+      if (attempt < 2) await new Promise((r) => setTimeout(r, 600 * (attempt + 1)))
     }
+    // All attempts failed — fall back to the last-good cached dataset
+    const cached = readCache()
+    if (cached) {
+      set({ data: cached, loading: false, hydrated: true, bootstrapError: false })
+      toast.error("Could not reach facility server", {
+        description: "Showing the last data loaded on this device. Offline features remain available.",
+      })
+      return
+    }
+    // No cache either — show the explicit error screen (never a blank page)
+    set({ loading: false, hydrated: true, bootstrapError: true })
+  },
+
+  retryBootstrap: async () => {
+    set({ loading: true, bootstrapError: false })
+    await get().bootstrap()
+  },
+
+  // ---------- auth (JWT session) ----------
+
+  ensureSession: async () => {
+    try {
+      const res = await fetch("/api/auth/session", { cache: "no-store" })
+      if (res.ok) {
+        const json = await res.json()
+        const s = (json.meta as { session?: ClientSession })?.session
+        if (s) {
+          set({ session: s, role: s.role })
+          return
+        }
+      }
+    } catch {
+      // server unreachable — stay signed out; offline queue still works
+    }
+    // No valid session — auto-authenticate as the patient-facing kiosk device
+    try {
+      await get().signIn("kiosk")
+    } catch {
+      // non-fatal: kiosk keeps working read-only until server returns
+    }
+  },
+
+  openAuthDialog: (preset = null) => set({ authDialogOpen: true, authDialogPreset: preset }),
+  closeAuthDialog: () => set({ authDialogOpen: false, authDialogPreset: null }),
+
+  signIn: async (role, pin) => {
+    try {
+      const res = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ role, pin }),
+      })
+      const json = await res.json()
+      if (!res.ok || !json.ok) {
+        toast.error("Sign in failed", { description: json.error ?? "Try again" })
+        return false
+      }
+      const s = (json.meta as { session?: ClientSession })?.session
+      set({ session: s ?? { role, name: role }, role, authDialogOpen: false, authDialogPreset: null })
+      if (role !== "kiosk") {
+        toast.success(`Signed in as ${s?.name ?? role}`, {
+          description: "JWT session issued — actions are now attributed in the audit trail.",
+        })
+      }
+      return true
+    } catch {
+      toast.error("Sign in failed", { description: "Could not reach the facility server." })
+      return false
+    }
+  },
+
+  signOut: async () => {
+    try {
+      await fetch("/api/auth/logout", { method: "POST" })
+    } catch {
+      // cookie clear is best-effort
+    }
+    set({ session: null, role: "kiosk" })
+    toast.info("Signed out", { description: "Kiosk device session ended." })
   },
 
   resetDemo: async () => {
@@ -231,6 +393,13 @@ export const useAppStore = create<AppState>((set, get) => ({
           role: "kiosk",
         })
         toast.success("Demo reset complete", { description: "Environment restored to the starting state." })
+      } else if (res.status === 401 || res.status === 403) {
+        set({ authDialogOpen: true, authDialogPreset: "admin" })
+        toast.error("Administrator sign-in required", {
+          description: "Demo reset is restricted to the Facility Administrator role.",
+        })
+      } else {
+        toast.error("Reset failed", { description: json.error ?? "Try again" })
       }
     } catch {
       toast.error("Reset failed")
@@ -278,6 +447,8 @@ export const useAppStore = create<AppState>((set, get) => ({
           age: form.age,
           gender: form.gender,
           phone: form.phone,
+          phoneHash: null,
+          abhaId: null,
           village: form.village,
           district: form.district,
           language: form.language,
@@ -304,6 +475,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           frontlineWorker: null,
           validatedBy: null,
           clinicalNote: null,
+          interviewAnswers: (form.interviewAnswers ?? []) as never,
           syncStatus: "PENDING" as const,
           createdAt: now,
           updatedAt: now,
@@ -317,12 +489,24 @@ export const useAppStore = create<AppState>((set, get) => ({
           detail: "Captured offline — pending sync",
           createdAt: now,
         }
+        const tempConsent = {
+          id: `local-c-${clientRef}`,
+          patientId: tempPatient.id,
+          visitId: tempVisit.id,
+          scope: "KIOSK_INTAKE" as const,
+          granted: true,
+          method: "KIOSK_CHECKBOX" as const,
+          language: form.language,
+          at: now,
+          withdrawnAt: null,
+        }
         if (d) {
           set({
             data: {
               ...d,
               patients: [tempPatient, ...d.patients],
               visits: [tempVisit, ...d.visits],
+              consents: [tempConsent, ...d.consents],
               audits: [tempAudit, ...d.audits],
             },
           })
@@ -576,8 +760,12 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
       set({ data: res!.data })
       const doc = (res!.meta as { document: DocumentRecord }).document
+      const engine = (res!.meta as { engine?: string }).engine ?? "simulated-template"
       toast.success(`OCR complete — ${doc.extracted.length} fields extracted`, {
-        description: "Fields are not clinically verified until a human validates them.",
+        description:
+          engine === "vision-ocr"
+            ? "Read from the uploaded image by the vision model. Not clinically verified until a human validates them."
+            : "Fields are not clinically verified until a human validates them.",
       })
       set({ activeDocumentId: doc.id })
       return doc

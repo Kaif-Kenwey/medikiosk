@@ -10,6 +10,7 @@ const D = (s: string) => new Date(s) // helper for readability
 
 export async function seedDemoData() {
   // Wipe all collections (demo reset)
+  await db.consentRecord.deleteMany()
   await db.auditEvent.deleteMany()
   await db.documentRecord.deleteMany()
   await db.followUp.deleteMany()
@@ -420,6 +421,38 @@ export async function seedDemoData() {
       { actor: "ANM Sunita Sharma", actorRole: "FRONTLINE", action: "VIEW_PATIENT_RECORD", target: "MK-2026-0287 Rahul Kumar", detail: "Opened longitudinal record", createdAt: D("2026-09-23T09:01:00+05:30") },
       { actor: "MediKiosk AI", actorRole: "AI_SERVICE", action: "TRIAGE_GENERATED", target: "MK-2026-0193 Ramesh Yadav", detail: "Routine priority — deterministic rules", createdAt: D("2026-09-23T09:02:00+05:30") },
     ],
+  })
+
+  // ---------------- Security at rest + consent artifacts ----------------
+  // All patient phones are stored AES-256-GCM encrypted with a blind index
+  // for continuity match; each returning patient carries a consent artifact.
+  const { encryptField, blindIndex } = await import("@/lib/crypto")
+  const seededPatients = await db.patient.findMany()
+  for (const p of seededPatients) {
+    if (!p.phone.startsWith("enc.v1:")) {
+      await db.patient.update({
+        where: { id: p.id },
+        data: { phone: encryptField(p.phone), phoneHash: blindIndex(p.phone) },
+      })
+    }
+  }
+  const consentSeed: { patientId: string; visitId: string | null; at: Date }[] = [
+    { patientId: sita.id, visitId: null, at: D("2026-06-03T10:12:00+05:30") },
+    { patientId: rahul.id, visitId: null, at: D("2026-05-11T09:30:00+05:30") },
+    { patientId: asha.id, visitId: null, at: D("2026-07-19T11:00:00+05:30") },
+    { patientId: ramesh.id, visitId: null, at: D("2026-03-02T10:00:00+05:30") },
+    { patientId: lakshmi.id, visitId: null, at: D("2026-04-22T12:20:00+05:30") },
+  ]
+  await db.consentRecord.createMany({
+    data: consentSeed.map((c) => ({
+      patientId: c.patientId,
+      visitId: c.visitId,
+      scope: "KIOSK_INTAKE",
+      granted: true,
+      method: "KIOSK_CHECKBOX",
+      language: "hi",
+      at: c.at,
+    })),
   })
 
   return { ok: true }

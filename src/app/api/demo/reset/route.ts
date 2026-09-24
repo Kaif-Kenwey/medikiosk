@@ -1,11 +1,14 @@
-import { NextResponse } from "next/server"
+import { NextRequest, NextResponse } from "next/server"
 import { seedDemoData } from "@/lib/seed"
 import { getDemoData } from "@/lib/server-data"
+import { guard } from "@/lib/auth"
 
 export const dynamic = "force-dynamic"
 
-/** Demo Mode: instantly reset the environment to a clean, seeded state */
-export async function POST() {
+/** Demo Mode: reset the environment to a clean, seeded state (ADMIN only) */
+export async function POST(req: NextRequest) {
+  const denied = guard(req, "POST")
+  if (denied) return denied
   try {
     await seedDemoData()
     const data = await getDemoData()

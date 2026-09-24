@@ -105,7 +105,7 @@ export default function AuditLogView() {
       {/* Stats chips */}
       <div className="flex flex-wrap gap-2">
         <Badge variant="outline" className="border-teal-200 bg-teal-50 px-3 py-1.5 text-teal-800">
-          {audits.length} total events
+          {audits.length} recent events
         </Badge>
         <Badge variant="outline" className="border-teal-200 bg-teal-50 px-3 py-1.5 text-teal-700">
           <Bot className="h-3.5 w-3.5" /> {aiEvents} AI events
